@@ -8,18 +8,18 @@ import pandas as pd
 from datetime import datetime
 
 # --- CONFIGURATION ---
-# The SEC requires a User-Agent in this format: "AppName/Version (Email)"
-# I have inserted your email here.
+# SEC User-Agent (Required for access)
 SEC_HEADERS = {
     "User-Agent": "AlphaInsider/1.0 (montedimes@gmail.com)"
 }
 
-app = FastAPI(title="AlphaInsider Backend", version="1.0")
+app = FastAPI(title="AlphaInsider Backend", version="2.0")
 
-# --- CORS (Crucial for connecting to your Render Frontend) ---
+# --- CORS ---
+# Allows your Next.js frontend to talk to this Python backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows your Next.js frontend to talk to this
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,7 +34,7 @@ class Signal(BaseModel):
     congress_activity: str
     legislative_context: Optional[str] = None
 
-# --- REAL DATA FETCHER (THE ENGINE) ---
+# --- REAL DATA FETCHER (SEC ENGINE) ---
 
 def get_real_sec_data(ticker: str):
     """
@@ -43,7 +43,6 @@ def get_real_sec_data(ticker: str):
     """
     try:
         # 1. Get the mapping of Ticker -> CIK (Central Index Key)
-        # This maps "NVDA" to "0001045810"
         cik_map_url = "https://www.sec.gov/files/company_tickers.json"
         r = requests.get(cik_map_url, headers=SEC_HEADERS)
         
@@ -89,7 +88,7 @@ def get_real_sec_data(ticker: str):
             filing_date = latest['filingDate']
             
             return {
-                "ticker": ticker,
+                "ticker": ticker_upper,
                 "description": f"New SEC Form 4 Filed on {filing_date}",
                 "date": filing_date
             }
@@ -100,7 +99,7 @@ def get_real_sec_data(ticker: str):
     
     return None
 
-# --- SIMULATION ENGINE (Fallback / Demo Data) ---
+# --- SIMULATION ENGINE (Fallback / Context Data) ---
 
 def generate_mock_signal(ticker_override=None):
     tickers = ["PLTR", "XOM", "META", "AMD", "MSFT"]
@@ -121,33 +120,42 @@ def generate_mock_signal(ticker_override=None):
 
 @app.get("/")
 def health_check():
-    return {"status": "active", "engine": "Python 3.10", "contact": "montedimes@gmail.com"}
+    return {"status": "active", "engine": "AlphaInsider V2", "contact": "montedimes@gmail.com"}
 
 @app.get("/api/signals")
-def get_alpha_signals():
+def get_alpha_signals(ticker: str = "NVDA"):
     """
-    Main endpoint called by your Next.js website.
+    DYNAMIC SEARCH:
+    Accepts a '?ticker=XYZ' parameter.
+    1. Tries to find REAL SEC data for that ticker.
+    2. If found, puts it at the top.
+    3. If not found, returns a 'No Data' signal.
+    4. Adds random signals below for context.
     """
     signals = []
+    target_ticker = ticker.upper()
 
-    # 1. TRY REAL DATA FOR NVDA
-    # This proves the connection to the government database works.
-    real_nvda = get_real_sec_data("NVDA")
+    # 1. SEARCH REAL GOV DATABASE
+    real_data = get_real_sec_data(target_ticker)
     
-    if real_nvda:
-        # If SEC answers, put real data at the top
-        real_signal = generate_mock_signal(ticker_override="NVDA")
-        real_signal.ticker = "NVDA (REAL SEC DATA)"
-        real_signal.corporate_activity = real_nvda['description']
-        real_signal.sentiment = "Bullish" # Hardcoded for demo, but data is real
+    if real_data:
+        # FOUND: Create a High Conviction Real Signal
+        real_signal = generate_mock_signal(ticker_override=target_ticker)
+        real_signal.ticker = f"{target_ticker} (REAL SEC DATA)"
+        real_signal.corporate_activity = real_data['description']
+        real_signal.sentiment = "Bullish" # Defaulting for demo
         signals.append(real_signal)
     else:
-        # Fallback if SEC is slow/blocking
-        signals.append(generate_mock_signal(ticker_override="NVDA"))
+        # NOT FOUND: Create a "No Data" Signal
+        fallback = generate_mock_signal(ticker_override=target_ticker)
+        fallback.ticker = target_ticker
+        fallback.corporate_activity = "No Recent Form 4 Found"
+        fallback.sentiment = "Neutral"
+        signals.append(fallback)
 
-    # 2. Add Simulation Data for the rest
-    # (So the table looks full and professional)
-    for _ in range(4):
+    # 2. Add Context Rows (To keep the table looking full)
+    # We add 3 random signals below the search result
+    for _ in range(3):
         signals.append(generate_mock_signal())
 
     return signals
