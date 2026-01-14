@@ -1,11 +1,12 @@
 import random
 from typing import List, Optional
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 import pandas as pd
 from datetime import datetime
+import io
 
 # --- CONFIGURATION ---
 # SEC User-Agent (Required for access)
@@ -13,10 +14,12 @@ SEC_HEADERS = {
     "User-Agent": "AlphaInsider/1.0 (montedimes@gmail.com)"
 }
 
-app = FastAPI(title="AlphaInsider Backend", version="2.0")
+# Congress Data URL (Public S3 Bucket)
+CONGRESS_DATA_URL = "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json"
+
+app = FastAPI(title="AlphaInsider Backend", version="3.0")
 
 # --- CORS ---
-# Allows your Next.js frontend to talk to this Python backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -28,139 +31,155 @@ app.add_middleware(
 # --- DATA MODELS ---
 class Signal(BaseModel):
     ticker: str
-    sentiment: str       # "Bullish", "Bearish", "Neutral"
-    conviction: str      # "High", "Moderate"
+    sentiment: str       
+    conviction: str      
     corporate_activity: str
     congress_activity: str
     legislative_context: Optional[str] = None
 
-# --- REAL DATA FETCHER (SEC ENGINE) ---
-
+# --- ENGINE 1: SEC CORPORATE DATA ---
 def get_real_sec_data(ticker: str):
-    """
-    Fetches the latest Form 4 (Insider Trading) filings for a specific company
-    directly from the SEC EDGAR API.
-    """
     try:
-        # 1. Get the mapping of Ticker -> CIK (Central Index Key)
+        # 1. Map Ticker to CIK
         cik_map_url = "https://www.sec.gov/files/company_tickers.json"
-        r = requests.get(cik_map_url, headers=SEC_HEADERS)
-        
-        if r.status_code != 200:
-            print(f"Error connecting to SEC: {r.status_code}")
-            return None
+        r = requests.get(cik_map_url, headers=SEC_HEADERS, timeout=5)
+        if r.status_code != 200: return None
 
         cik_data = r.json()
-        
-        # Find the CIK for our ticker
         target_cik = None
         ticker_upper = ticker.upper()
         
         for key, val in cik_data.items():
             if val['ticker'] == ticker_upper:
-                # SEC requires 10 digits (leading zeros)
                 target_cik = str(val['cik_str']).zfill(10) 
                 break
         
-        if not target_cik:
-            print(f"Ticker {ticker} not found in SEC database.")
-            return None
+        if not target_cik: return None
 
-        # 2. Fetch the Company's Submission History
+        # 2. Fetch Submission History
         submissions_url = f"https://data.sec.gov/submissions/CIK{target_cik}.json"
-        r_sub = requests.get(submissions_url, headers=SEC_HEADERS)
-        
-        if r_sub.status_code != 200:
-            return None
+        r_sub = requests.get(submissions_url, headers=SEC_HEADERS, timeout=5)
+        if r_sub.status_code != 200: return None
             
         company_data = r_sub.json()
-        
-        # 3. Filter for "4" (Insider Trade) filings
         recent_forms = company_data['filings']['recent']
         df = pd.DataFrame(recent_forms)
         
-        # Look for Form 4 (Statement of Changes in Beneficial Ownership)
+        # 3. Filter for Form 4 (Insider Trades)
         insider_trades = df[df['form'] == '4']
-        
         if not insider_trades.empty:
-            # Get the most recent filing
             latest = insider_trades.iloc[0]
-            filing_date = latest['filingDate']
+            return {
+                "description": f"New SEC Form 4 Filed on {latest['filingDate']}",
+                "date": latest['filingDate']
+            }
+    except Exception as e:
+        print(f"SEC Error: {e}")
+        return None
+    return None
+
+# --- ENGINE 2: CONGRESSIONAL DATA (NEW!) ---
+def get_real_congress_data(ticker: str):
+    """
+    Fetches the House Stock Watcher JSON and filters for the specific ticker.
+    """
+    try:
+        # 1. Download the Data (Note: This file is ~10MB, might take 1-2s)
+        # In a production app, we would cache this daily.
+        r = requests.get(CONGRESS_DATA_URL)
+        if r.status_code != 200: return None
+
+        # 2. Parse into Pandas
+        data = r.json()
+        df = pd.DataFrame(data)
+        
+        # 3. Filter by Ticker
+        # The dataset uses 'ticker' column (e.g. 'NVDA')
+        ticker_match = df[df['ticker'] == ticker.upper()]
+        
+        if not ticker_match.empty:
+            # Sort by transaction date (descending)
+            ticker_match['transaction_date'] = pd.to_datetime(ticker_match['transaction_date'], errors='coerce')
+            ticker_match = ticker_match.sort_values(by='transaction_date', ascending=False)
+            
+            latest = ticker_match.iloc[0]
+            
+            # Format: "Rep. Pelosi (D-CA) Buy"
+            rep_name = latest.get('representative', 'Unknown Rep')
+            action = latest.get('type', 'Trade') # purchase/sale_full
+            date_str = str(latest['transaction_date']).split(' ')[0]
             
             return {
-                "ticker": ticker_upper,
-                "description": f"New SEC Form 4 Filed on {filing_date}",
-                "date": filing_date
+                "description": f"{rep_name} {action} on {date_str}",
+                "date": date_str
             }
             
     except Exception as e:
-        print(f"Error fetching SEC data: {e}")
+        print(f"Congress Error: {e}")
         return None
-    
     return None
 
-# --- SIMULATION ENGINE (Fallback / Context Data) ---
-
+# --- SIMULATION (FALLBACK) ---
 def generate_mock_signal(ticker_override=None):
     tickers = ["PLTR", "XOM", "META", "AMD", "MSFT"]
     ticker = ticker_override if ticker_override else random.choice(tickers)
-    
     is_bullish = random.choice([True, False])
-    
     return Signal(
         ticker=ticker,
         sentiment="Bullish" if is_bullish else "Bearish",
         conviction="High" if random.random() > 0.5 else "Moderate",
-        corporate_activity="CEO Buy ($5.2M)" if is_bullish else "Director Sell ($1.1M)",
-        congress_activity="Rep. Crenshaw Buy" if is_bullish else "No Recent Activity",
-        legislative_context="CHIPS Act Amendment" if ticker in ["NVDA", "AMD"] else "Data Privacy Bill"
+        corporate_activity="No Recent Filings",
+        congress_activity="No Recent Activity",
+        legislative_context="General Market Monitoring"
     )
 
 # --- API ENDPOINTS ---
-
 @app.get("/")
 def health_check():
-    return {"status": "active", "engine": "AlphaInsider V2", "contact": "montedimes@gmail.com"}
+    return {"status": "active", "version": "3.0 (Dual Engine)"}
 
 @app.get("/api/signals")
 def get_alpha_signals(ticker: str = "NVDA"):
-    """
-    DYNAMIC SEARCH:
-    Accepts a '?ticker=XYZ' parameter.
-    1. Tries to find REAL SEC data for that ticker.
-    2. If found, puts it at the top.
-    3. If not found, returns a 'No Data' signal.
-    4. Adds random signals below for context.
-    """
     signals = []
     target_ticker = ticker.upper()
 
-    # 1. SEARCH REAL GOV DATABASE
-    real_data = get_real_sec_data(target_ticker)
+    # --- 1. RUN THE ENGINES ---
+    sec_data = get_real_sec_data(target_ticker)
+    congress_data = get_real_congress_data(target_ticker)
     
-    if real_data:
-        # FOUND: Create a High Conviction Real Signal
-        real_signal = generate_mock_signal(ticker_override=target_ticker)
-        real_signal.ticker = f"{target_ticker} (REAL SEC DATA)"
-        real_signal.corporate_activity = real_data['description']
-        real_signal.sentiment = "Bullish" # Defaulting for demo
-        signals.append(real_signal)
+    # --- 2. BUILD THE MASTER SIGNAL ---
+    # Start with a base signal
+    master_signal = generate_mock_signal(ticker_override=target_ticker)
+    master_signal.ticker = f"{target_ticker} (LIVE)"
+    
+    # Inject SEC Data
+    if sec_data:
+        master_signal.corporate_activity = sec_data['description']
+        
+    # Inject Congress Data
+    if congress_data:
+        master_signal.congress_activity = congress_data['description']
+        
+    # Determine Sentiment (Simple Logic)
+    # If both engines found data, we mark it High Conviction
+    if sec_data or congress_data:
+        master_signal.conviction = "High"
+        master_signal.sentiment = "Bullish" # Simplified for tutorial
     else:
-        # NOT FOUND: Create a "No Data" Signal
-        fallback = generate_mock_signal(ticker_override=target_ticker)
-        fallback.ticker = target_ticker
-        fallback.corporate_activity = "No Recent Form 4 Found"
-        fallback.sentiment = "Neutral"
-        signals.append(fallback)
+        master_signal.ticker = target_ticker
+        master_signal.corporate_activity = "No Recent Form 4"
+        master_signal.congress_activity = "No Recent House Trades"
+        master_signal.conviction = "Low"
+        master_signal.sentiment = "Neutral"
 
-    # 2. Add Context Rows (To keep the table looking full)
-    # We add 3 random signals below the search result
+    signals.append(master_signal)
+
+    # --- 3. ADD CONTEXT ROWS ---
     for _ in range(3):
         signals.append(generate_mock_signal())
 
     return signals
 
-# --- RUNNER ---
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
