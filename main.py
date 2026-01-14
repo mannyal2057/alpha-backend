@@ -26,24 +26,29 @@ congress_cache = {"data": None, "mode": "STARTING", "last_updated": None}
 # --- 2. DATA WORKER (BACKGROUND BACKUP) ---
 
 def download_public_data():
-    """Downloads public S3 data as a robust backup using Full Stealth Headers."""
+    """Downloads public S3 data using 'Super Stealth' headers to bypass 403 blocks."""
     print(f"🌍 WORKER: Updating Public Backup Cache...")
     try:
-        # FULL STEALTH HEADERS (Required to bypass S3 403 Forbidden)
+        # SUPER STEALTH HEADERS (Exact Replica of Chrome 120 on Windows)
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
             "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
+            "Accept-Language": "en-US,en;q=0.9",
             "Upgrade-Insecure-Requests": "1",
+            "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
             "Sec-Fetch-Dest": "document",
             "Sec-Fetch-Mode": "navigate",
             "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1"
+            "Sec-Fetch-User": "?1",
+            "Connection": "keep-alive"
         }
         
-        r = requests.get(PUBLIC_DATA_URL, headers=headers, timeout=60)
+        # Use a Session to simulate a real browser connection state
+        session = requests.Session()
+        r = session.get(PUBLIC_DATA_URL, headers=headers, timeout=60)
         
         if r.status_code == 200:
             df = pd.DataFrame(r.json())
@@ -55,8 +60,7 @@ def download_public_data():
             return None
     except Exception as e:
         print(f"❌ WORKER ERROR: {e}")
-        return None
-def run_background_scanner():
+        return Nonedef run_background_scanner():
     """
     Runs every hour to keep the 'Safety Net' (Public Data) fresh.
     """
