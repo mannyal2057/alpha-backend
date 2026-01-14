@@ -10,52 +10,51 @@ import pandas as pd
 from datetime import datetime
 
 # --- 1. CONFIGURATION ---
-# SEC User-Agent (Required for access)
 SEC_HEADERS = {"User-Agent": "AlphaInsider/1.0 (montedimes@gmail.com)"}
 
-# ENV VARS: Looks for these in Render
+# ENV VARS
 CONGRESS_API_KEY = os.getenv("CONGRESS_API_KEY") 
 CONGRESS_API_URL = os.getenv("CONGRESS_API_URL", "https://api.quiverquant.com/beta/live/congresstrading") 
-
-# Fallback URL (Public Data)
 PUBLIC_DATA_URL = "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json"
 
 # --- GLOBAL MEMORY ---
 congress_cache = {"data": None, "mode": "UNKNOWN"}
+
+# --- HELPER: DOWNLOAD PUBLIC DATA ---
+def download_public_data():
+    """Downloads the massive public dataset as a fallback."""
+    print("🌍 FALLBACK: Downloading Public S3 Dataset...")
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(PUBLIC_DATA_URL, headers=headers, timeout=60)
+        if r.status_code == 200:
+            df = pd.DataFrame(r.json())
+            df['transaction_date'] = pd.to_datetime(df['transaction_date'], errors='coerce')
+            congress_cache["data"] = df
+            congress_cache["mode"] = "LOCAL"
+            print(f"✅ SUCCESS: Loaded {len(df)} trades from Public S3.")
+            return True
+    except Exception as e:
+        print(f"❌ PUBLIC LOAD ERROR: {e}")
+    return False
 
 # --- LIFESPAN (STARTUP LOGIC) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🚀 SYSTEM BOOT: Initializing Data Engines...")
     
-    # CHECK: Do we have an API Key?
+    # 1. Try to use API Mode if Key exists
     if CONGRESS_API_KEY:
-        print(f"💎 PRO MODE: API Key detected. Connected to {CONGRESS_API_URL}")
+        print(f"💎 PRO MODE: Key detected. API is active.")
         congress_cache["mode"] = "API"
     else:
-        print("🌍 PUBLIC MODE: No API Key found. Attempting to download bulk dataset...")
-        try:
-            # Download public data with a long timeout (60s)
-            headers = {"User-Agent": "AlphaInsider/1.0"}
-            r = requests.get(PUBLIC_DATA_URL, headers=headers, timeout=60)
-            
-            if r.status_code == 200:
-                df = pd.DataFrame(r.json())
-                df['transaction_date'] = pd.to_datetime(df['transaction_date'], errors='coerce')
-                congress_cache["data"] = df
-                congress_cache["mode"] = "LOCAL"
-                print(f"✅ SUCCESS: Loaded {len(df)} trades into memory.")
-            else:
-                print(f"❌ DOWNLOAD FAILED: Status {r.status_code}")
-                congress_cache["mode"] = "OFFLINE"
-        except Exception as e:
-            print(f"❌ ERROR: {e}")
-            congress_cache["mode"] = "OFFLINE"
+        # 2. If no key, go straight to Public Mode
+        download_public_data()
     
     yield
     congress_cache["data"] = None
 
-app = FastAPI(title="AlphaInsider Backend", version="8.0 (Anti-Block)", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Backend", version="9.0 (Self-Healing)", lifespan=lifespan)
 
 # --- CORS ---
 app.add_middleware(
@@ -78,7 +77,7 @@ class Signal(BaseModel):
 # --- ENGINE 1: SEC CORPORATE DATA ---
 def get_real_sec_data(ticker: str):
     try:
-        # 1. Map Ticker to CIK
+        # Map Ticker to CIK
         cik_map_url = "https://www.sec.gov/files/company_tickers.json"
         r = requests.get(cik_map_url, headers=SEC_HEADERS, timeout=5)
         if r.status_code != 200: return None
@@ -94,7 +93,7 @@ def get_real_sec_data(ticker: str):
         
         if not target_cik: return None
 
-        # 2. Fetch Filings
+        # Fetch Filings
         submissions_url = f"https://data.sec.gov/submissions/CIK{target_cik}.json"
         r_sub = requests.get(submissions_url, headers=SEC_HEADERS, timeout=5)
         if r_sub.status_code != 200: return None
@@ -102,7 +101,7 @@ def get_real_sec_data(ticker: str):
         recent_forms = r_sub.json()['filings']['recent']
         df = pd.DataFrame(recent_forms)
         
-        # 3. Filter for Form 4
+        # Filter for Form 4
         insider_trades = df[df['form'] == '4']
         if not insider_trades.empty:
             latest = insider_trades.iloc[0]
@@ -110,62 +109,52 @@ def get_real_sec_data(ticker: str):
                 "description": f"New SEC Form 4 Filed on {latest['filingDate']}",
                 "date": latest['filingDate']
             }
-    except Exception as e:
-        print(f"SEC Error: {e}")
+    except:
         return None
     return None
 
-# --- ENGINE 2: CONGRESSIONAL DATA (FIXED HEADERS) ---
+# --- ENGINE 2: CONGRESSIONAL DATA (SMART FAILOVER) ---
 def get_congress_data(ticker: str):
     mode = congress_cache.get("mode")
     ticker_upper = ticker.upper()
 
-    # OPTION A: PRO API MODE
+    # --- STRATEGY A: PRO API ---
     if mode == "API":
         try:
-            # ⬇️ CRITICAL FIX: Add "User-Agent" to look like a real browser
-            # This prevents Cloudflare from blocking us (Error 500)
             headers = {
                 "Authorization": f"Bearer {CONGRESS_API_KEY}",
                 "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
             }
             params = {"ticker": ticker_upper} 
             
-            print(f"📡 DEBUG: Sending API Request for {ticker_upper}...")
-            
-            response = requests.get(CONGRESS_API_URL, headers=headers, params=params, timeout=10)
-            
-            print(f"📩 DEBUG: API Status: {response.status_code}")
+            # Fast Timeout (3s) - If it blocks, we failover immediately
+            response = requests.get(CONGRESS_API_URL, headers=headers, params=params, timeout=3)
             
             if response.status_code == 200:
                 data = response.json()
-                
                 if isinstance(data, list) and len(data) > 0:
                     latest = data[0]
-                    # Quiver Quantitative / Standard Parsing
                     rep = latest.get('Representative') or latest.get('representative') or "Unknown Rep"
-                    tx_type = latest.get('Transaction') or latest.get('type') or "Trade"
+                    type_ = latest.get('Transaction') or latest.get('type') or "Trade"
                     date = latest.get('ReportDate') or latest.get('transaction_date') or "Recently"
-                    
-                    return {"description": f"{rep} ({tx_type}) on {date}"}
-                
-                return None # Empty list means no recent trades
-                
-            elif response.status_code == 500:
-                print("❌ DEBUG: API Server Error (Cloudflare Block). Double-check your API Key and Plan.")
-                return None
-            else:
-                print(f"❌ DEBUG: API Error {response.status_code}")
-                # Print a small part of the response to see the error message
-                print(f"RAW: {response.text[:200]}")
-                return None
+                    return {"description": f"{rep} ({type_}) on {date}"}
+                return None 
+            
+            # IF BLOCKED (500/403) -> SWITCH TO PUBLIC MODE PERMANENTLY
+            elif response.status_code in [403, 500, 520]:
+                print(f"⚠️ API BLOCKED ({response.status_code}). Switching to Public S3 Mode...")
+                download_public_data() # Load the backup data
+                congress_cache["mode"] = "LOCAL" # Switch mode for next time
+                return get_congress_data(ticker) # Recursive call to try again immediately
 
         except Exception as e:
-            print(f"❌ DEBUG API Error: {e}")
-            return None
+            print(f"❌ API ERROR: {e}. Switching to Public S3 Mode...")
+            download_public_data()
+            congress_cache["mode"] = "LOCAL"
+            return get_congress_data(ticker)
 
-    # OPTION B: LOCAL CACHE MODE (Fallback)
+    # --- STRATEGY B: LOCAL CACHE (FALLBACK) ---
     elif mode == "LOCAL":
         df = congress_cache["data"]
         if df is None: return None
@@ -200,8 +189,7 @@ def generate_mock_signal(ticker_override=None):
 def health_check():
     return {
         "status": "active", 
-        "congress_mode": congress_cache.get("mode", "Unknown"),
-        "debug_enabled": True
+        "mode": congress_cache.get("mode", "Unknown"),
     }
 
 @app.get("/api/signals")
@@ -209,19 +197,14 @@ def get_alpha_signals(ticker: str = "NVDA"):
     signals = []
     target = ticker.upper()
 
-    # 1. EXECUTE SEARCH
     sec_data = get_real_sec_data(target)
     congress_data = get_congress_data(target)
     
-    # 2. BUILD MASTER SIGNAL
     main_signal = generate_mock_signal(ticker_override=target)
     main_signal.ticker = f"{target} (LIVE)"
     
-    if sec_data:
-        main_signal.corporate_activity = sec_data['description']
-        
-    if congress_data:
-        main_signal.congress_activity = congress_data['description']
+    if sec_data: main_signal.corporate_activity = sec_data['description']
+    if congress_data: main_signal.congress_activity = congress_data['description']
     
     if sec_data or congress_data:
         main_signal.conviction = "High"
@@ -230,10 +213,7 @@ def get_alpha_signals(ticker: str = "NVDA"):
         main_signal.sentiment = "Neutral"
 
     signals.append(main_signal)
-
-    # 3. ADD CONTEXT ROWS
-    for _ in range(3):
-        signals.append(generate_mock_signal())
+    for _ in range(3): signals.append(generate_mock_signal())
 
     return signals
 
