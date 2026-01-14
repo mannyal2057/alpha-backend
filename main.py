@@ -10,15 +10,13 @@ import pandas as pd
 from datetime import datetime
 
 # --- 1. CONFIGURATION ---
-# SEC User-Agent (Required for access)
 SEC_HEADERS = {"User-Agent": "AlphaInsider/1.0 (montedimes@gmail.com)"}
 
-# ⬇️ ENV VARS: The script looks for these in your Render Dashboard
-# If you are running locally, create a .env file with these values.
+# ENV VARS: Looks for these in Render
 CONGRESS_API_KEY = os.getenv("CONGRESS_API_KEY") 
 CONGRESS_API_URL = os.getenv("CONGRESS_API_URL", "https://api.quiverquant.com/beta/live/congresstrading") 
 
-# Fallback URL (Public Data) - Used if no API Key is found
+# Fallback URL (Public Data)
 PUBLIC_DATA_URL = "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json"
 
 # --- GLOBAL MEMORY ---
@@ -36,13 +34,12 @@ async def lifespan(app: FastAPI):
     else:
         print("🌍 PUBLIC MODE: No API Key found. Attempting to download bulk dataset...")
         try:
-            # Download public data with a long timeout (60s) to prevent timeouts
+            # Download public data with a long timeout (60s)
             headers = {"User-Agent": "AlphaInsider/1.0"}
             r = requests.get(PUBLIC_DATA_URL, headers=headers, timeout=60)
             
             if r.status_code == 200:
                 df = pd.DataFrame(r.json())
-                # Optimize date column once on startup
                 df['transaction_date'] = pd.to_datetime(df['transaction_date'], errors='coerce')
                 congress_cache["data"] = df
                 congress_cache["mode"] = "LOCAL"
@@ -55,10 +52,9 @@ async def lifespan(app: FastAPI):
             congress_cache["mode"] = "OFFLINE"
     
     yield
-    # Cleanup on shutdown
     congress_cache["data"] = None
 
-app = FastAPI(title="AlphaInsider Backend", version="6.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Backend", version="7.0 (Debug)", lifespan=lifespan)
 
 # --- CORS ---
 app.add_middleware(
@@ -80,9 +76,6 @@ class Signal(BaseModel):
 
 # --- ENGINE 1: SEC CORPORATE DATA ---
 def get_real_sec_data(ticker: str):
-    """
-    Fetches latest Form 4 filing from SEC EDGAR.
-    """
     try:
         # 1. Map Ticker to CIK
         cik_map_url = "https://www.sec.gov/files/company_tickers.json"
@@ -100,13 +93,12 @@ def get_real_sec_data(ticker: str):
         
         if not target_cik: return None
 
-        # 2. Fetch Submission History
+        # 2. Fetch Filings
         submissions_url = f"https://data.sec.gov/submissions/CIK{target_cik}.json"
         r_sub = requests.get(submissions_url, headers=SEC_HEADERS, timeout=5)
         if r_sub.status_code != 200: return None
             
-        company_data = r_sub.json()
-        recent_forms = company_data['filings']['recent']
+        recent_forms = r_sub.json()['filings']['recent']
         df = pd.DataFrame(recent_forms)
         
         # 3. Filter for Form 4
@@ -122,7 +114,7 @@ def get_real_sec_data(ticker: str):
         return None
     return None
 
-# --- ENGINE 2: CONGRESSIONAL DATA (SMART ROUTER) ---
+# --- ENGINE 2: CONGRESSIONAL DATA (DEBUG MODE) ---
 def get_congress_data(ticker: str):
     mode = congress_cache.get("mode")
     ticker_upper = ticker.upper()
@@ -130,48 +122,65 @@ def get_congress_data(ticker: str):
     # OPTION A: PRO API MODE
     if mode == "API":
         try:
-            # Standard Bearer Token Header
+            # Prepare Headers
             headers = {
                 "Authorization": f"Bearer {CONGRESS_API_KEY}",
                 "Accept": "application/json"
             }
-            # Many APIs use 'ticker' or 'symbol' as a param
+            # Most APIs use 'ticker' or 'symbol'
             params = {"ticker": ticker_upper} 
+            
+            # --- DEBUG LOGGING START ---
+            print(f"📡 DEBUG: Sending API Request for {ticker_upper}...")
             
             response = requests.get(CONGRESS_API_URL, headers=headers, params=params, timeout=5)
             
+            print(f"📩 DEBUG: API Status: {response.status_code}")
+            print(f"📩 DEBUG: API Raw Body: {response.text[:500]}") # Show first 500 chars of data
+            # --- DEBUG LOGGING END ---
+
             if response.status_code == 200:
                 data = response.json()
-                # ADAPTER: Adjust this logic to match your specific API's response format
+                
+                # CHECK: Is it a list with items?
                 if isinstance(data, list) and len(data) > 0:
                     latest = data[0]
-                    # Generic fallback if specific keys aren't known
-                    desc = f"Recent Trade Detected via API"
-                    if 'representative' in latest:
-                        desc = f"{latest['representative']} trade detected"
-                    return {"description": desc}
+                    
+                    # ADAPTER: Try to find the right keys (Case Insensitive)
+                    # Quiver often uses 'Representative', 'Transaction', etc.
+                    rep = latest.get('Representative') or latest.get('representative') or "Unknown Rep"
+                    tx_type = latest.get('Transaction') or latest.get('type') or "Trade"
+                    date = latest.get('ReportDate') or latest.get('transaction_date') or "Recently"
+                    
+                    return {"description": f"{rep} ({tx_type}) on {date}"}
+                
+                elif isinstance(data, dict) and "error" in data:
+                     print(f"⚠️ DEBUG: API Error Message: {data['error']}")
+                     return None
+                
+                else:
+                    print(f"⚠️ DEBUG: API returned empty list for {ticker_upper}")
+                    return None
+            else:
+                print("❌ DEBUG: API returned non-200 status")
                 return None
+
         except Exception as e:
-            print(f"API Request Error: {e}")
+            print(f"❌ DEBUG API Error: {e}")
             return None
 
-    # OPTION B: LOCAL CACHE MODE (Fallback)
+    # OPTION B: LOCAL CACHE MODE
     elif mode == "LOCAL":
         df = congress_cache["data"]
         if df is None: return None
         
-        # Filter local dataframe
         matches = df[df['ticker'] == ticker_upper]
-        
         if not matches.empty:
-            # Get most recent
             matches = matches.sort_values(by='transaction_date', ascending=False)
             latest = matches.iloc[0]
-            
             rep = latest.get('representative', 'Unknown')
             type_ = latest.get('type', 'Trade')
             date = str(latest['transaction_date']).split(' ')[0]
-            
             return {"description": f"{rep} {type_} on {date}"}
             
     return None
@@ -196,7 +205,7 @@ def health_check():
     return {
         "status": "active", 
         "congress_mode": congress_cache.get("mode", "Unknown"),
-        "api_configured": "Yes" if CONGRESS_API_KEY else "No"
+        "debug_enabled": True
     }
 
 @app.get("/api/signals")
@@ -212,14 +221,12 @@ def get_alpha_signals(ticker: str = "NVDA"):
     main_signal = generate_mock_signal(ticker_override=target)
     main_signal.ticker = f"{target} (LIVE)"
     
-    # Inject Real Data
     if sec_data:
         main_signal.corporate_activity = sec_data['description']
         
     if congress_data:
         main_signal.congress_activity = congress_data['description']
     
-    # Logic: If we found REAL data, boost conviction
     if sec_data or congress_data:
         main_signal.conviction = "High"
         main_signal.sentiment = "Bullish"
@@ -228,7 +235,7 @@ def get_alpha_signals(ticker: str = "NVDA"):
 
     signals.append(main_signal)
 
-    # 3. ADD CONTEXT ROWS (Simulation)
+    # 3. ADD CONTEXT ROWS
     for _ in range(3):
         signals.append(generate_mock_signal())
 
