@@ -10,6 +10,7 @@ import pandas as pd
 from datetime import datetime
 
 # --- 1. CONFIGURATION ---
+# SEC User-Agent (Required for access)
 SEC_HEADERS = {"User-Agent": "AlphaInsider/1.0 (montedimes@gmail.com)"}
 
 # ENV VARS: Looks for these in Render
@@ -54,7 +55,7 @@ async def lifespan(app: FastAPI):
     yield
     congress_cache["data"] = None
 
-app = FastAPI(title="AlphaInsider Backend", version="7.0 (Debug)", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Backend", version="8.0 (Anti-Block)", lifespan=lifespan)
 
 # --- CORS ---
 app.add_middleware(
@@ -122,7 +123,8 @@ def get_congress_data(ticker: str):
     # OPTION A: PRO API MODE
     if mode == "API":
         try:
-            # ⬇️ FIX: Add a real Browser User-Agent to bypass Cloudflare
+            # ⬇️ CRITICAL FIX: Add "User-Agent" to look like a real browser
+            # This prevents Cloudflare from blocking us (Error 500)
             headers = {
                 "Authorization": f"Bearer {CONGRESS_API_KEY}",
                 "Accept": "application/json",
@@ -141,7 +143,7 @@ def get_congress_data(ticker: str):
                 
                 if isinstance(data, list) and len(data) > 0:
                     latest = data[0]
-                    # Quiver Quantitative Specific Parsing
+                    # Quiver Quantitative / Standard Parsing
                     rep = latest.get('Representative') or latest.get('representative') or "Unknown Rep"
                     tx_type = latest.get('Transaction') or latest.get('type') or "Trade"
                     date = latest.get('ReportDate') or latest.get('transaction_date') or "Recently"
@@ -155,6 +157,7 @@ def get_congress_data(ticker: str):
                 return None
             else:
                 print(f"❌ DEBUG: API Error {response.status_code}")
+                # Print a small part of the response to see the error message
                 print(f"RAW: {response.text[:200]}")
                 return None
 
@@ -163,21 +166,6 @@ def get_congress_data(ticker: str):
             return None
 
     # OPTION B: LOCAL CACHE MODE (Fallback)
-    elif mode == "LOCAL":
-        df = congress_cache["data"]
-        if df is None: return None
-        
-        matches = df[df['ticker'] == ticker_upper]
-        if not matches.empty:
-            matches = matches.sort_values(by='transaction_date', ascending=False)
-            latest = matches.iloc[0]
-            rep = latest.get('representative', 'Unknown')
-            type_ = latest.get('type', 'Trade')
-            date = str(latest['transaction_date']).split(' ')[0]
-            return {"description": f"{rep} {type_} on {date}"}
-            
-    return None
-    # OPTION B: LOCAL CACHE MODE
     elif mode == "LOCAL":
         df = congress_cache["data"]
         if df is None: return None
