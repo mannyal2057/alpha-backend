@@ -20,24 +20,39 @@ PUBLIC_DATA_URL = "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/d
 # --- GLOBAL MEMORY ---
 congress_cache = {"data": None, "mode": "UNKNOWN"}
 
-# --- HELPER: DOWNLOAD PUBLIC DATA ---
+# --- HELPER: DOWNLOAD PUBLIC DATA (FORENSIC MODE) ---
 def download_public_data():
-    """Downloads the massive public dataset as a fallback."""
+    """Downloads the massive public dataset and runs a forensic check."""
     print("🌍 FALLBACK: Downloading Public S3 Dataset...")
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         r = requests.get(PUBLIC_DATA_URL, headers=headers, timeout=60)
+        
         if r.status_code == 200:
             df = pd.DataFrame(r.json())
+            
+            # 1. FIX DATES
             df['transaction_date'] = pd.to_datetime(df['transaction_date'], errors='coerce')
+            
+            # 2. GLOBAL STATS (Forensic)
+            latest_global = df['transaction_date'].max()
+            print(f"✅ SUCCESS: Loaded {len(df)} trades.")
+            print(f"📅 DATA FRESHNESS: The most recent trade in this entire file is from: {latest_global}")
+            
+            # 3. NVDA CHECK (Forensic)
+            nvda_check = df[df['ticker'] == 'NVDA']
+            if not nvda_check.empty:
+                print(f"🔎 NVDA FOUND: Found {len(nvda_check)} total trades for NVDA in backup.")
+                print(f"   Latest NVDA Trade: {nvda_check['transaction_date'].max()}")
+            else:
+                print("❌ NVDA MISSING: The backup file contains ZERO trades for NVDA.")
+                
             congress_cache["data"] = df
             congress_cache["mode"] = "LOCAL"
-            print(f"✅ SUCCESS: Loaded {len(df)} trades from Public S3.")
             return True
     except Exception as e:
         print(f"❌ PUBLIC LOAD ERROR: {e}")
     return False
-
 # --- LIFESPAN (STARTUP LOGIC) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
