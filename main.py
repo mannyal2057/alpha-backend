@@ -1,46 +1,64 @@
+import os
 import random
 from typing import List, Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 import pandas as pd
 from datetime import datetime
-import io
 
-# --- CONFIGURATION ---
+# --- 1. CONFIGURATION ---
+# SEC User-Agent (Required for access)
 SEC_HEADERS = {"User-Agent": "AlphaInsider/1.0 (montedimes@gmail.com)"}
-CONGRESS_DATA_URL = "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json"
 
-# --- GLOBAL MEMORY (THE CACHE) ---
-# We store the Congress data here so we don't have to download it every time.
-congress_cache = {"data": None, "last_updated": None}
+# ⬇️ ENV VARS: The script looks for these in your Render Dashboard
+# If you are running locally, create a .env file with these values.
+CONGRESS_API_KEY = os.getenv("CONGRESS_API_KEY") 
+CONGRESS_API_URL = os.getenv("CONGRESS_API_URL", "https://api.quiverquant.com/beta/live/congresstrading") 
 
-# --- LIFESPAN MANAGER (STARTUP EVENT) ---
+# Fallback URL (Public Data) - Used if no API Key is found
+PUBLIC_DATA_URL = "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json"
+
+# --- GLOBAL MEMORY ---
+congress_cache = {"data": None, "mode": "UNKNOWN"}
+
+# --- LIFESPAN (STARTUP LOGIC) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. ON STARTUP: Download the heavy Congress data immediately
-    print("🚀 SYSTEM BOOT: Pre-loading Congress Data...")
-    try:
-        r = requests.get(CONGRESS_DATA_URL, timeout=30)
-        if r.status_code == 200:
-            df = pd.DataFrame(r.json())
-            # Optimize: Convert date column once
-            df['transaction_date'] = pd.to_datetime(df['transaction_date'], errors='coerce')
-            congress_cache["data"] = df
-            print(f"✅ SUCCESS: Loaded {len(df)} Congressional trades into memory.")
-        else:
-            print("❌ FAILURE: Could not download Congress data.")
-    except Exception as e:
-        print(f"❌ ERROR: {e}")
+    print("🚀 SYSTEM BOOT: Initializing Data Engines...")
     
-    yield # App runs here
+    # CHECK: Do we have an API Key?
+    if CONGRESS_API_KEY:
+        print(f"💎 PRO MODE: API Key detected. Connected to {CONGRESS_API_URL}")
+        congress_cache["mode"] = "API"
+    else:
+        print("🌍 PUBLIC MODE: No API Key found. Attempting to download bulk dataset...")
+        try:
+            # Download public data with a long timeout (60s) to prevent timeouts
+            headers = {"User-Agent": "AlphaInsider/1.0"}
+            r = requests.get(PUBLIC_DATA_URL, headers=headers, timeout=60)
+            
+            if r.status_code == 200:
+                df = pd.DataFrame(r.json())
+                # Optimize date column once on startup
+                df['transaction_date'] = pd.to_datetime(df['transaction_date'], errors='coerce')
+                congress_cache["data"] = df
+                congress_cache["mode"] = "LOCAL"
+                print(f"✅ SUCCESS: Loaded {len(df)} trades into memory.")
+            else:
+                print(f"❌ DOWNLOAD FAILED: Status {r.status_code}")
+                congress_cache["mode"] = "OFFLINE"
+        except Exception as e:
+            print(f"❌ ERROR: {e}")
+            congress_cache["mode"] = "OFFLINE"
     
-    # 2. ON SHUTDOWN: Clear memory
+    yield
+    # Cleanup on shutdown
     congress_cache["data"] = None
 
-app = FastAPI(title="AlphaInsider Backend", version="4.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Backend", version="6.0", lifespan=lifespan)
 
 # --- CORS ---
 app.add_middleware(
@@ -51,7 +69,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- DATA MODELS ---
+# --- MODELS ---
 class Signal(BaseModel):
     ticker: str
     sentiment: str       
@@ -62,12 +80,15 @@ class Signal(BaseModel):
 
 # --- ENGINE 1: SEC CORPORATE DATA ---
 def get_real_sec_data(ticker: str):
+    """
+    Fetches latest Form 4 filing from SEC EDGAR.
+    """
     try:
-        # Map Ticker to CIK
+        # 1. Map Ticker to CIK
         cik_map_url = "https://www.sec.gov/files/company_tickers.json"
         r = requests.get(cik_map_url, headers=SEC_HEADERS, timeout=5)
         if r.status_code != 200: return None
-
+        
         cik_data = r.json()
         target_cik = None
         ticker_upper = ticker.upper()
@@ -79,7 +100,7 @@ def get_real_sec_data(ticker: str):
         
         if not target_cik: return None
 
-        # Fetch Submission History
+        # 2. Fetch Submission History
         submissions_url = f"https://data.sec.gov/submissions/CIK{target_cik}.json"
         r_sub = requests.get(submissions_url, headers=SEC_HEADERS, timeout=5)
         if r_sub.status_code != 200: return None
@@ -88,7 +109,7 @@ def get_real_sec_data(ticker: str):
         recent_forms = company_data['filings']['recent']
         df = pd.DataFrame(recent_forms)
         
-        # Filter for Form 4 (Insider Trades)
+        # 3. Filter for Form 4
         insider_trades = df[df['form'] == '4']
         if not insider_trades.empty:
             latest = insider_trades.iloc[0]
@@ -101,42 +122,61 @@ def get_real_sec_data(ticker: str):
         return None
     return None
 
-# --- ENGINE 2: CONGRESSIONAL DATA (CACHE VERSION) ---
-def get_cached_congress_data(ticker: str):
-    """
-    Queries the pre-loaded memory instead of downloading the file.
-    Instant results!
-    """
-    df = congress_cache["data"]
-    if df is None:
-        return {"description": "Data Loading..."}
-        
-    try:
-        # Filter by Ticker
-        ticker_match = df[df['ticker'] == ticker.upper()]
-        
-        if not ticker_match.empty:
-            # Sort by transaction date (descending)
-            ticker_match = ticker_match.sort_values(by='transaction_date', ascending=False)
-            latest = ticker_match.iloc[0]
-            
-            # Format: "Rep. Pelosi (D-CA) Buy"
-            rep_name = latest.get('representative', 'Unknown Rep')
-            action = latest.get('type', 'Trade') 
-            date_str = str(latest['transaction_date']).split(' ')[0]
-            
-            return {
-                "description": f"{rep_name} {action} on {date_str}",
-                "date": date_str
-            }
-        else:
-            return None # Truly no trades found
-            
-    except Exception as e:
-        print(f"Congress Cache Error: {e}")
-        return None
+# --- ENGINE 2: CONGRESSIONAL DATA (SMART ROUTER) ---
+def get_congress_data(ticker: str):
+    mode = congress_cache.get("mode")
+    ticker_upper = ticker.upper()
 
-# --- SIMULATION (FALLBACK) ---
+    # OPTION A: PRO API MODE
+    if mode == "API":
+        try:
+            # Standard Bearer Token Header
+            headers = {
+                "Authorization": f"Bearer {CONGRESS_API_KEY}",
+                "Accept": "application/json"
+            }
+            # Many APIs use 'ticker' or 'symbol' as a param
+            params = {"ticker": ticker_upper} 
+            
+            response = requests.get(CONGRESS_API_URL, headers=headers, params=params, timeout=5)
+            
+            if response.status_code == 200:
+                data = response.json()
+                # ADAPTER: Adjust this logic to match your specific API's response format
+                if isinstance(data, list) and len(data) > 0:
+                    latest = data[0]
+                    # Generic fallback if specific keys aren't known
+                    desc = f"Recent Trade Detected via API"
+                    if 'representative' in latest:
+                        desc = f"{latest['representative']} trade detected"
+                    return {"description": desc}
+                return None
+        except Exception as e:
+            print(f"API Request Error: {e}")
+            return None
+
+    # OPTION B: LOCAL CACHE MODE (Fallback)
+    elif mode == "LOCAL":
+        df = congress_cache["data"]
+        if df is None: return None
+        
+        # Filter local dataframe
+        matches = df[df['ticker'] == ticker_upper]
+        
+        if not matches.empty:
+            # Get most recent
+            matches = matches.sort_values(by='transaction_date', ascending=False)
+            latest = matches.iloc[0]
+            
+            rep = latest.get('representative', 'Unknown')
+            type_ = latest.get('type', 'Trade')
+            date = str(latest['transaction_date']).split(' ')[0]
+            
+            return {"description": f"{rep} {type_} on {date}"}
+            
+    return None
+
+# --- FALLBACK GENERATOR ---
 def generate_mock_signal(ticker_override=None):
     tickers = ["PLTR", "XOM", "META", "AMD", "MSFT"]
     ticker = ticker_override if ticker_override else random.choice(tickers)
@@ -153,39 +193,42 @@ def generate_mock_signal(ticker_override=None):
 # --- API ENDPOINTS ---
 @app.get("/")
 def health_check():
-    # Show if data is loaded in the health check
-    data_status = "Ready" if congress_cache["data"] is not None else "Loading..."
-    return {"status": "active", "congress_data": data_status}
+    return {
+        "status": "active", 
+        "congress_mode": congress_cache.get("mode", "Unknown"),
+        "api_configured": "Yes" if CONGRESS_API_KEY else "No"
+    }
 
 @app.get("/api/signals")
 def get_alpha_signals(ticker: str = "NVDA"):
     signals = []
-    target_ticker = ticker.upper()
+    target = ticker.upper()
 
-    # 1. RUN THE ENGINES
-    sec_data = get_real_sec_data(target_ticker)
-    congress_data = get_cached_congress_data(target_ticker)
+    # 1. EXECUTE SEARCH
+    sec_data = get_real_sec_data(target)
+    congress_data = get_congress_data(target)
     
     # 2. BUILD MASTER SIGNAL
-    master_signal = generate_mock_signal(ticker_override=target_ticker)
-    master_signal.ticker = f"{target_ticker} (LIVE)"
+    main_signal = generate_mock_signal(ticker_override=target)
+    main_signal.ticker = f"{target} (LIVE)"
     
+    # Inject Real Data
     if sec_data:
-        master_signal.corporate_activity = sec_data['description']
+        main_signal.corporate_activity = sec_data['description']
         
     if congress_data:
-        master_signal.congress_activity = congress_data['description']
-        
-    # Sentiment Logic
+        main_signal.congress_activity = congress_data['description']
+    
+    # Logic: If we found REAL data, boost conviction
     if sec_data or congress_data:
-        master_signal.conviction = "High"
-        master_signal.sentiment = "Bullish"
+        main_signal.conviction = "High"
+        main_signal.sentiment = "Bullish"
     else:
-        master_signal.sentiment = "Neutral"
+        main_signal.sentiment = "Neutral"
 
-    signals.append(master_signal)
+    signals.append(main_signal)
 
-    # 3. ADD CONTEXT
+    # 3. ADD CONTEXT ROWS (Simulation)
     for _ in range(3):
         signals.append(generate_mock_signal())
 
