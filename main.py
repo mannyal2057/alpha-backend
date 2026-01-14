@@ -20,29 +20,28 @@ CONGRESS_API_URL = os.getenv("CONGRESS_API_URL", "https://api.quiverquant.com/be
 PUBLIC_DATA_URL = "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json"
 
 # --- GLOBAL MEMORY ---
-# The background thread updates this. The API reads from this.
+# The background thread updates this. The fallback logic reads from this.
 congress_cache = {"data": None, "mode": "STARTING", "last_updated": None}
 
-# --- 2. DATA WORKER FUNCTIONS ---
+# --- 2. DATA WORKER (BACKGROUND BACKUP) ---
 
 def download_public_data():
-    """Downloads public S3 data (Forensic Mode). Returns DataFrame or None."""
-    print(f"🌍 WORKER: Downloading Public S3 Data at {datetime.now()}...")
+    """Downloads public S3 data as a robust backup."""
+    print(f"🌍 WORKER: Updating Public Backup Cache...")
     try:
-        # Use a real browser header to avoid 403 blocks
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        # Stealth Headers to avoid 403 blocks on S3
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
         r = requests.get(PUBLIC_DATA_URL, headers=headers, timeout=60)
         
         if r.status_code == 200:
             df = pd.DataFrame(r.json())
             df['transaction_date'] = pd.to_datetime(df['transaction_date'], errors='coerce')
-            
-            # Forensic Logs
-            latest_date = df['transaction_date'].max()
-            print(f"✅ WORKER SUCCESS: Loaded {len(df)} trades. Latest date in file: {latest_date}")
+            print(f"✅ WORKER SUCCESS: Public Backup Updated ({len(df)} trades).")
             return df
         else:
-            print(f"❌ WORKER FAILED: S3 returned status {r.status_code}")
+            print(f"⚠️ WORKER WARNING: S3 Backup failed ({r.status_code}). App will rely on Live API.")
             return None
     except Exception as e:
         print(f"❌ WORKER ERROR: {e}")
@@ -50,43 +49,36 @@ def download_public_data():
 
 def run_background_scanner():
     """
-    The 'Heartbeat' of your app.
-    Runs in a separate thread. Wakes up every hour to refresh data.
+    Runs every hour to keep the 'Safety Net' (Public Data) fresh.
     """
     print("⏳ BACKGROUND SCANNER STARTED...")
-    
     while True:
-        # 1. Try Custom API First (If Key Exists)
-        if CONGRESS_API_KEY:
-            # Note: For many APIs, you don't 'download' everything. 
-            # You might just rely on live queries. 
-            # But if you want to avoid blocking, you can stick to Public Data for the bulk list.
-            print("💎 PRO MODE: API Key is active. (Using hybrid mode)")
-            congress_cache["mode"] = "API"
-        
-        # 2. Always refresh the Public Backup (Reliable Baseline)
         df = download_public_data()
         if df is not None:
             congress_cache["data"] = df
             congress_cache["mode"] = "READY"
             congress_cache["last_updated"] = datetime.now()
         
-        # 3. Sleep for 1 Hour (3600 seconds)
-        print("💤 SCANNER SLEEPING: See you in 1 hour.")
+        # Sleep for 1 Hour
         time.sleep(3600)
 
-# --- 3. FASTAPI LIFESPAN (STARTUP) ---
+# --- 3. FASTAPI LIFESPAN ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Start the scanner in a background thread
     scan_thread = threading.Thread(target=run_background_scanner, daemon=True)
     scan_thread.start()
     
+    # Check API Status on Boot
+    if CONGRESS_API_KEY:
+        print(f"💎 SYSTEM BOOT: API Key detected. Engine set to 'API FIRST' mode.")
+    else:
+        print(f"🌍 SYSTEM BOOT: No API Key. Engine set to 'PUBLIC CACHE' mode.")
+        
     yield
-    # Cleanup on shutdown
     congress_cache["data"] = None
 
-app = FastAPI(title="AlphaInsider Backend", version="10.0 (Threaded)", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Backend", version="11.0 (API First)", lifespan=lifespan)
 
 # --- CORS ---
 app.add_middleware(
@@ -136,14 +128,49 @@ def get_real_sec_data(ticker: str):
         return None
     return None
 
-# --- ENGINE 2: CONGRESS DATA (Instant Cache) ---
+# --- ENGINE 2: CONGRESS DATA (API FIRST + BACKUP) ---
 def get_congress_data(ticker: str):
     """
-    Reads INSTANTLY from memory. No API calls. No blocking.
+    STRATEGY:
+    1. Try LIVE API (Best Data).
+    2. If that fails (Block/Limit), read from LOCAL CACHE (Backup Data).
     """
     ticker_upper = ticker.upper()
-    
-    # 1. Check Local Cache (Populated by Background Thread)
+
+    # --- ATTEMPT 1: LIVE API ---
+    if CONGRESS_API_KEY:
+        try:
+            # We use 'Stealth Headers' here too, just in case
+            headers = {
+                "Authorization": f"Bearer {CONGRESS_API_KEY}",
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            params = {"ticker": ticker_upper}
+            
+            # Short timeout (3s) so user doesn't wait if API is slow
+            r = requests.get(CONGRESS_API_URL, headers=headers, params=params, timeout=3)
+            
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, list) and len(data) > 0:
+                    latest = data[0]
+                    # Parse Quiver/Standard Format
+                    rep = latest.get('Representative') or latest.get('representative') or "Unknown Rep"
+                    type_ = latest.get('Transaction') or latest.get('type') or "Trade"
+                    date = latest.get('ReportDate') or latest.get('transaction_date') or "Recently"
+                    return {"description": f"{rep} ({type_}) on {date} (Live API)"}
+            
+            # If API returns empty list [] it means NO TRADES found by API.
+            # We can stop here, or check backup. Let's stop to be accurate.
+            if r.status_code == 200:
+                pass # No trades found via API
+
+        except Exception as e:
+            print(f"⚠️ API ERROR: {e}. Falling back to cache...")
+
+    # --- ATTEMPT 2: LOCAL CACHE (FALLBACK) ---
+    # We only get here if API Key is missing OR API Request Failed/Crashed
     df = congress_cache.get("data")
     if df is not None:
         matches = df[df['ticker'] == ticker_upper]
@@ -154,18 +181,7 @@ def get_congress_data(ticker: str):
             rep = latest.get('representative', 'Unknown')
             type_ = latest.get('type', 'Trade')
             date = str(latest['transaction_date']).split(' ')[0]
-            return {"description": f"{rep} {type_} on {date}"}
-
-    # 2. If Pro Key exists, try one live fetch (Optional fallback)
-    if CONGRESS_API_KEY:
-        try:
-            # Pro API Logic (Only runs if cache missed)
-            headers = {"Authorization": f"Bearer {CONGRESS_API_KEY}", "Accept": "application/json"}
-            r = requests.get(CONGRESS_API_URL, headers=headers, params={"ticker": ticker_upper}, timeout=2)
-            if r.status_code == 200 and len(r.json()) > 0:
-                 return {"description": "Recent Trade Detected (Live API)"}
-        except:
-            pass
+            return {"description": f"{rep} {type_} on {date} (Backup Data)"}
 
     return None
 
@@ -188,8 +204,8 @@ def generate_mock_signal(ticker_override=None):
 def health_check():
     return {
         "status": "active",
-        "worker_mode": congress_cache["mode"],
-        "last_updated": congress_cache["last_updated"]
+        "api_enabled": bool(CONGRESS_API_KEY),
+        "backup_cache": "Ready" if congress_cache["data"] is not None else "Empty"
     }
 
 @app.get("/api/signals")
