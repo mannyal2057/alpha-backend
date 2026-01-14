@@ -114,7 +114,7 @@ def get_real_sec_data(ticker: str):
         return None
     return None
 
-# --- ENGINE 2: CONGRESSIONAL DATA (DEBUG MODE) ---
+# --- ENGINE 2: CONGRESSIONAL DATA (FIXED HEADERS) ---
 def get_congress_data(ticker: str):
     mode = congress_cache.get("mode")
     ticker_upper = ticker.upper()
@@ -122,53 +122,61 @@ def get_congress_data(ticker: str):
     # OPTION A: PRO API MODE
     if mode == "API":
         try:
-            # Prepare Headers
+            # ⬇️ FIX: Add a real Browser User-Agent to bypass Cloudflare
             headers = {
                 "Authorization": f"Bearer {CONGRESS_API_KEY}",
-                "Accept": "application/json"
+                "Accept": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             }
-            # Most APIs use 'ticker' or 'symbol'
             params = {"ticker": ticker_upper} 
             
-            # --- DEBUG LOGGING START ---
             print(f"📡 DEBUG: Sending API Request for {ticker_upper}...")
             
-            response = requests.get(CONGRESS_API_URL, headers=headers, params=params, timeout=5)
+            response = requests.get(CONGRESS_API_URL, headers=headers, params=params, timeout=10)
             
             print(f"📩 DEBUG: API Status: {response.status_code}")
-            print(f"📩 DEBUG: API Raw Body: {response.text[:500]}") # Show first 500 chars of data
-            # --- DEBUG LOGGING END ---
-
+            
             if response.status_code == 200:
                 data = response.json()
                 
-                # CHECK: Is it a list with items?
                 if isinstance(data, list) and len(data) > 0:
                     latest = data[0]
-                    
-                    # ADAPTER: Try to find the right keys (Case Insensitive)
-                    # Quiver often uses 'Representative', 'Transaction', etc.
+                    # Quiver Quantitative Specific Parsing
                     rep = latest.get('Representative') or latest.get('representative') or "Unknown Rep"
                     tx_type = latest.get('Transaction') or latest.get('type') or "Trade"
                     date = latest.get('ReportDate') or latest.get('transaction_date') or "Recently"
                     
                     return {"description": f"{rep} ({tx_type}) on {date}"}
                 
-                elif isinstance(data, dict) and "error" in data:
-                     print(f"⚠️ DEBUG: API Error Message: {data['error']}")
-                     return None
+                return None # Empty list means no recent trades
                 
-                else:
-                    print(f"⚠️ DEBUG: API returned empty list for {ticker_upper}")
-                    return None
+            elif response.status_code == 500:
+                print("❌ DEBUG: API Server Error (Cloudflare Block). Double-check your API Key and Plan.")
+                return None
             else:
-                print("❌ DEBUG: API returned non-200 status")
+                print(f"❌ DEBUG: API Error {response.status_code}")
+                print(f"RAW: {response.text[:200]}")
                 return None
 
         except Exception as e:
             print(f"❌ DEBUG API Error: {e}")
             return None
 
+    # OPTION B: LOCAL CACHE MODE (Fallback)
+    elif mode == "LOCAL":
+        df = congress_cache["data"]
+        if df is None: return None
+        
+        matches = df[df['ticker'] == ticker_upper]
+        if not matches.empty:
+            matches = matches.sort_values(by='transaction_date', ascending=False)
+            latest = matches.iloc[0]
+            rep = latest.get('representative', 'Unknown')
+            type_ = latest.get('type', 'Trade')
+            date = str(latest['transaction_date']).split(' ')[0]
+            return {"description": f"{rep} {type_} on {date}"}
+            
+    return None
     # OPTION B: LOCAL CACHE MODE
     elif mode == "LOCAL":
         df = congress_cache["data"]
