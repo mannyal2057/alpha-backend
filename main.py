@@ -60,7 +60,9 @@ def download_public_data():
             return None
     except Exception as e:
         print(f"❌ WORKER ERROR: {e}")
-        return Nonedef run_background_scanner():
+        return None
+
+def run_background_scanner():
     """
     Runs every hour to keep the 'Safety Net' (Public Data) fresh.
     """
@@ -91,7 +93,7 @@ async def lifespan(app: FastAPI):
     yield
     congress_cache["data"] = None
 
-app = FastAPI(title="AlphaInsider Backend", version="11.0 (API First)", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Backend", version="12.0 (Stealth)", lifespan=lifespan)
 
 # --- CORS ---
 app.add_middleware(
@@ -174,8 +176,6 @@ def get_congress_data(ticker: str):
                     date = latest.get('ReportDate') or latest.get('transaction_date') or "Recently"
                     return {"description": f"{rep} ({type_}) on {date} (Live API)"}
             
-            # If API returns empty list [] it means NO TRADES found by API.
-            # We can stop here, or check backup. Let's stop to be accurate.
             if r.status_code == 200:
                 pass # No trades found via API
 
@@ -183,7 +183,6 @@ def get_congress_data(ticker: str):
             print(f"⚠️ API ERROR: {e}. Falling back to cache...")
 
     # --- ATTEMPT 2: LOCAL CACHE (FALLBACK) ---
-    # We only get here if API Key is missing OR API Request Failed/Crashed
     df = congress_cache.get("data")
     if df is not None:
         matches = df[df['ticker'] == ticker_upper]
