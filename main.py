@@ -26,13 +26,23 @@ congress_cache = {"data": None, "mode": "STARTING", "last_updated": None}
 # --- 2. DATA WORKER (BACKGROUND BACKUP) ---
 
 def download_public_data():
-    """Downloads public S3 data as a robust backup."""
+    """Downloads public S3 data as a robust backup using Full Stealth Headers."""
     print(f"🌍 WORKER: Updating Public Backup Cache...")
     try:
-        # Stealth Headers to avoid 403 blocks on S3
+        # FULL STEALTH HEADERS (Required to bypass S3 403 Forbidden)
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1"
         }
+        
         r = requests.get(PUBLIC_DATA_URL, headers=headers, timeout=60)
         
         if r.status_code == 200:
@@ -46,7 +56,6 @@ def download_public_data():
     except Exception as e:
         print(f"❌ WORKER ERROR: {e}")
         return None
-
 def run_background_scanner():
     """
     Runs every hour to keep the 'Safety Net' (Public Data) fresh.
