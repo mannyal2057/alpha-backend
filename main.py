@@ -1,4 +1,6 @@
 import os
+import time
+import threading
 import random
 from typing import List, Optional
 from contextlib import asynccontextmanager
@@ -12,64 +14,79 @@ from datetime import datetime
 # --- 1. CONFIGURATION ---
 SEC_HEADERS = {"User-Agent": "AlphaInsider/1.0 (montedimes@gmail.com)"}
 
-# ENV VARS
+# ENV VARS (API Keys)
 CONGRESS_API_KEY = os.getenv("CONGRESS_API_KEY") 
 CONGRESS_API_URL = os.getenv("CONGRESS_API_URL", "https://api.quiverquant.com/beta/live/congresstrading") 
 PUBLIC_DATA_URL = "https://house-stock-watcher-data.s3-us-west-2.amazonaws.com/data/all_transactions.json"
 
 # --- GLOBAL MEMORY ---
-congress_cache = {"data": None, "mode": "UNKNOWN"}
+# The background thread updates this. The API reads from this.
+congress_cache = {"data": None, "mode": "STARTING", "last_updated": None}
 
-# --- HELPER: DOWNLOAD PUBLIC DATA (FORENSIC MODE) ---
+# --- 2. DATA WORKER FUNCTIONS ---
+
 def download_public_data():
-    """Downloads the massive public dataset and runs a forensic check."""
-    print("🌍 FALLBACK: Downloading Public S3 Dataset...")
+    """Downloads public S3 data (Forensic Mode). Returns DataFrame or None."""
+    print(f"🌍 WORKER: Downloading Public S3 Data at {datetime.now()}...")
     try:
-        headers = {"User-Agent": "Mozilla/5.0"}
+        # Use a real browser header to avoid 403 blocks
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
         r = requests.get(PUBLIC_DATA_URL, headers=headers, timeout=60)
         
         if r.status_code == 200:
             df = pd.DataFrame(r.json())
-            
-            # 1. FIX DATES
             df['transaction_date'] = pd.to_datetime(df['transaction_date'], errors='coerce')
             
-            # 2. GLOBAL STATS (Forensic)
-            latest_global = df['transaction_date'].max()
-            print(f"✅ SUCCESS: Loaded {len(df)} trades.")
-            print(f"📅 DATA FRESHNESS: The most recent trade in this entire file is from: {latest_global}")
-            
-            # 3. NVDA CHECK (Forensic)
-            nvda_check = df[df['ticker'] == 'NVDA']
-            if not nvda_check.empty:
-                print(f"🔎 NVDA FOUND: Found {len(nvda_check)} total trades for NVDA in backup.")
-                print(f"   Latest NVDA Trade: {nvda_check['transaction_date'].max()}")
-            else:
-                print("❌ NVDA MISSING: The backup file contains ZERO trades for NVDA.")
-                
-            congress_cache["data"] = df
-            congress_cache["mode"] = "LOCAL"
-            return True
+            # Forensic Logs
+            latest_date = df['transaction_date'].max()
+            print(f"✅ WORKER SUCCESS: Loaded {len(df)} trades. Latest date in file: {latest_date}")
+            return df
+        else:
+            print(f"❌ WORKER FAILED: S3 returned status {r.status_code}")
+            return None
     except Exception as e:
-        print(f"❌ PUBLIC LOAD ERROR: {e}")
-    return False
-# --- LIFESPAN (STARTUP LOGIC) ---
+        print(f"❌ WORKER ERROR: {e}")
+        return None
+
+def run_background_scanner():
+    """
+    The 'Heartbeat' of your app.
+    Runs in a separate thread. Wakes up every hour to refresh data.
+    """
+    print("⏳ BACKGROUND SCANNER STARTED...")
+    
+    while True:
+        # 1. Try Custom API First (If Key Exists)
+        if CONGRESS_API_KEY:
+            # Note: For many APIs, you don't 'download' everything. 
+            # You might just rely on live queries. 
+            # But if you want to avoid blocking, you can stick to Public Data for the bulk list.
+            print("💎 PRO MODE: API Key is active. (Using hybrid mode)")
+            congress_cache["mode"] = "API"
+        
+        # 2. Always refresh the Public Backup (Reliable Baseline)
+        df = download_public_data()
+        if df is not None:
+            congress_cache["data"] = df
+            congress_cache["mode"] = "READY"
+            congress_cache["last_updated"] = datetime.now()
+        
+        # 3. Sleep for 1 Hour (3600 seconds)
+        print("💤 SCANNER SLEEPING: See you in 1 hour.")
+        time.sleep(3600)
+
+# --- 3. FASTAPI LIFESPAN (STARTUP) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 SYSTEM BOOT: Initializing Data Engines...")
-    
-    # 1. Try to use API Mode if Key exists
-    if CONGRESS_API_KEY:
-        print(f"💎 PRO MODE: Key detected. API is active.")
-        congress_cache["mode"] = "API"
-    else:
-        # 2. If no key, go straight to Public Mode
-        download_public_data()
+    # Start the scanner in a background thread
+    scan_thread = threading.Thread(target=run_background_scanner, daemon=True)
+    scan_thread.start()
     
     yield
+    # Cleanup on shutdown
     congress_cache["data"] = None
 
-app = FastAPI(title="AlphaInsider Backend", version="9.0 (Self-Healing)", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Backend", version="10.0 (Threaded)", lifespan=lifespan)
 
 # --- CORS ---
 app.add_middleware(
@@ -89,100 +106,67 @@ class Signal(BaseModel):
     congress_activity: str
     legislative_context: Optional[str] = None
 
-# --- ENGINE 1: SEC CORPORATE DATA ---
+# --- ENGINE 1: SEC DATA (Real-Time) ---
 def get_real_sec_data(ticker: str):
     try:
-        # Map Ticker to CIK
-        cik_map_url = "https://www.sec.gov/files/company_tickers.json"
-        r = requests.get(cik_map_url, headers=SEC_HEADERS, timeout=5)
+        headers = SEC_HEADERS
+        # 1. CIK Lookup
+        r = requests.get("https://www.sec.gov/files/company_tickers.json", headers=headers, timeout=5)
         if r.status_code != 200: return None
         
-        cik_data = r.json()
         target_cik = None
         ticker_upper = ticker.upper()
-        
-        for key, val in cik_data.items():
-            if val['ticker'] == ticker_upper:
-                target_cik = str(val['cik_str']).zfill(10) 
+        for k, v in r.json().items():
+            if v['ticker'] == ticker_upper:
+                target_cik = str(v['cik_str']).zfill(10)
                 break
-        
         if not target_cik: return None
 
-        # Fetch Filings
-        submissions_url = f"https://data.sec.gov/submissions/CIK{target_cik}.json"
-        r_sub = requests.get(submissions_url, headers=SEC_HEADERS, timeout=5)
+        # 2. Submissions
+        r_sub = requests.get(f"https://data.sec.gov/submissions/CIK{target_cik}.json", headers=headers, timeout=5)
         if r_sub.status_code != 200: return None
-            
-        recent_forms = r_sub.json()['filings']['recent']
-        df = pd.DataFrame(recent_forms)
         
-        # Filter for Form 4
-        insider_trades = df[df['form'] == '4']
-        if not insider_trades.empty:
-            latest = insider_trades.iloc[0]
-            return {
-                "description": f"New SEC Form 4 Filed on {latest['filingDate']}",
-                "date": latest['filingDate']
-            }
+        df = pd.DataFrame(r_sub.json()['filings']['recent'])
+        trades = df[df['form'] == '4']
+        
+        if not trades.empty:
+            latest = trades.iloc[0]
+            return {"description": f"New SEC Form 4 Filed on {latest['filingDate']}"}
     except:
         return None
     return None
 
-# --- ENGINE 2: CONGRESSIONAL DATA (SMART FAILOVER) ---
+# --- ENGINE 2: CONGRESS DATA (Instant Cache) ---
 def get_congress_data(ticker: str):
-    mode = congress_cache.get("mode")
+    """
+    Reads INSTANTLY from memory. No API calls. No blocking.
+    """
     ticker_upper = ticker.upper()
-
-    # --- STRATEGY A: PRO API ---
-    if mode == "API":
-        try:
-            headers = {
-                "Authorization": f"Bearer {CONGRESS_API_KEY}",
-                "Accept": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            }
-            params = {"ticker": ticker_upper} 
-            
-            # Fast Timeout (3s) - If it blocks, we failover immediately
-            response = requests.get(CONGRESS_API_URL, headers=headers, params=params, timeout=3)
-            
-            if response.status_code == 200:
-                data = response.json()
-                if isinstance(data, list) and len(data) > 0:
-                    latest = data[0]
-                    rep = latest.get('Representative') or latest.get('representative') or "Unknown Rep"
-                    type_ = latest.get('Transaction') or latest.get('type') or "Trade"
-                    date = latest.get('ReportDate') or latest.get('transaction_date') or "Recently"
-                    return {"description": f"{rep} ({type_}) on {date}"}
-                return None 
-            
-            # IF BLOCKED (500/403) -> SWITCH TO PUBLIC MODE PERMANENTLY
-            elif response.status_code in [403, 500, 520]:
-                print(f"⚠️ API BLOCKED ({response.status_code}). Switching to Public S3 Mode...")
-                download_public_data() # Load the backup data
-                congress_cache["mode"] = "LOCAL" # Switch mode for next time
-                return get_congress_data(ticker) # Recursive call to try again immediately
-
-        except Exception as e:
-            print(f"❌ API ERROR: {e}. Switching to Public S3 Mode...")
-            download_public_data()
-            congress_cache["mode"] = "LOCAL"
-            return get_congress_data(ticker)
-
-    # --- STRATEGY B: LOCAL CACHE (FALLBACK) ---
-    elif mode == "LOCAL":
-        df = congress_cache["data"]
-        if df is None: return None
-        
+    
+    # 1. Check Local Cache (Populated by Background Thread)
+    df = congress_cache.get("data")
+    if df is not None:
         matches = df[df['ticker'] == ticker_upper]
         if not matches.empty:
             matches = matches.sort_values(by='transaction_date', ascending=False)
             latest = matches.iloc[0]
+            
             rep = latest.get('representative', 'Unknown')
             type_ = latest.get('type', 'Trade')
             date = str(latest['transaction_date']).split(' ')[0]
             return {"description": f"{rep} {type_} on {date}"}
-            
+
+    # 2. If Pro Key exists, try one live fetch (Optional fallback)
+    if CONGRESS_API_KEY:
+        try:
+            # Pro API Logic (Only runs if cache missed)
+            headers = {"Authorization": f"Bearer {CONGRESS_API_KEY}", "Accept": "application/json"}
+            r = requests.get(CONGRESS_API_URL, headers=headers, params={"ticker": ticker_upper}, timeout=2)
+            if r.status_code == 200 and len(r.json()) > 0:
+                 return {"description": "Recent Trade Detected (Live API)"}
+        except:
+            pass
+
     return None
 
 # --- FALLBACK GENERATOR ---
@@ -203,8 +187,9 @@ def generate_mock_signal(ticker_override=None):
 @app.get("/")
 def health_check():
     return {
-        "status": "active", 
-        "mode": congress_cache.get("mode", "Unknown"),
+        "status": "active",
+        "worker_mode": congress_cache["mode"],
+        "last_updated": congress_cache["last_updated"]
     }
 
 @app.get("/api/signals")
@@ -212,22 +197,22 @@ def get_alpha_signals(ticker: str = "NVDA"):
     signals = []
     target = ticker.upper()
 
-    sec_data = get_real_sec_data(target)
-    congress_data = get_congress_data(target)
+    sec = get_real_sec_data(target)
+    congress = get_congress_data(target)
     
-    main_signal = generate_mock_signal(ticker_override=target)
-    main_signal.ticker = f"{target} (LIVE)"
+    main = generate_mock_signal(ticker_override=target)
+    main.ticker = f"{target} (LIVE)"
     
-    if sec_data: main_signal.corporate_activity = sec_data['description']
-    if congress_data: main_signal.congress_activity = congress_data['description']
+    if sec: main.corporate_activity = sec['description']
+    if congress: main.congress_activity = congress['description']
     
-    if sec_data or congress_data:
-        main_signal.conviction = "High"
-        main_signal.sentiment = "Bullish"
+    if sec or congress:
+        main.conviction = "High"
+        main.sentiment = "Bullish"
     else:
-        main_signal.sentiment = "Neutral"
+        main.sentiment = "Neutral"
 
-    signals.append(main_signal)
+    signals.append(main)
     for _ in range(3): signals.append(generate_mock_signal())
 
     return signals
