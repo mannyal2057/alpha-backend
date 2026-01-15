@@ -19,26 +19,52 @@ SEC_HEADERS = {
 CONGRESS_API_KEY = os.getenv("CONGRESS_API_KEY") 
 CONGRESS_API_URL = os.getenv("CONGRESS_API_URL", "https://api.quiverquant.com/beta/live/congresstrading") 
 
-# --- 2. LEGISLATIVE ENGINE ---
+# --- 2. LEGISLATIVE ENGINE (UPDATED WITH MARKET IMPACT) ---
 def get_legislative_data(ticker: str):
     t = ticker.upper()
     if t in ["NVDA", "AMD", "MSFT", "GOOGL", "PLTR", "META", "TSLA"]:
-        return {"bill_id": "S. 2714", "bill_name": "AI Safety & Innovation Act", "sponsor": "Sen. Chuck Schumer (D-NY)"}
+        return {
+            "bill_id": "S. 2714", 
+            "bill_name": "AI Safety & Innovation Act", 
+            "sponsor": "Sen. Chuck Schumer (D-NY)",
+            "market_impact": "Establishes federal AI safety standards. Bullish for entrenched players (NVDA, MSFT) who can afford compliance costs; Bearish for small open-source startups."
+        }
     elif t in ["XOM", "CVX", "OXY", "BP", "SHEL"]:
-        return {"bill_id": "H.R. 1", "bill_name": "Lower Energy Costs Act", "sponsor": "Rep. Steve Scalise (R-LA)"}
+        return {
+            "bill_id": "H.R. 1", 
+            "bill_name": "Lower Energy Costs Act", 
+            "sponsor": "Rep. Steve Scalise (R-LA)",
+            "market_impact": "Expands offshore drilling leases and speeds up permits. Highly Bullish for traditional Oil & Gas majors; Neutral for renewables."
+        }
     elif t in ["COIN", "HOOD", "SQ", "PYPL", "MARA"]:
-        return {"bill_id": "H.R. 4763", "bill_name": "Financial Innovation for 21st Century Act", "sponsor": "Rep. Glenn Thompson (R-PA)"}
+        return {
+            "bill_id": "H.R. 4763", 
+            "bill_name": "Financial Innovation Act", 
+            "sponsor": "Rep. Glenn Thompson (R-PA)",
+            "market_impact": "Creates clear regulatory framework for digital assets. Bullish for Coinbase (COIN) and institutional crypto adoption."
+        }
     elif t in ["LMT", "RTX", "BA", "NOC", "GD"]:
-        return {"bill_id": "H.R. 8070", "bill_name": "Servicemember Quality of Life Act", "sponsor": "Rep. Mike Rogers (R-AL)"}
-    return {"bill_id": "H.R. 5525", "bill_name": "Continuing Appropriations Act", "sponsor": "Rep. Kevin McCarthy (R-CA)"}
+        return {
+            "bill_id": "H.R. 8070", 
+            "bill_name": "Servicemember Quality of Life Act", 
+            "sponsor": "Rep. Mike Rogers (R-AL)",
+            "market_impact": "Increases base defense budget by 15%. Bullish for prime defense contractors (LMT, RTX) due to new procurement contracts."
+        }
+    
+    return {
+        "bill_id": "H.R. 5525", 
+        "bill_name": "Continuing Appropriations Act", 
+        "sponsor": "Rep. Kevin McCarthy (R-CA)",
+        "market_impact": "Short-term government funding. Neutral market impact, prevents immediate government shutdown volatility."
+    }
 
 # --- 3. LIFESPAN ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider Engine v17.0 (SEC Smart-Scan Online).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider Engine v18.0 (Impact Analysis Online).")
     yield
 
-app = FastAPI(title="AlphaInsider Backend", version="17.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Backend", version="18.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -57,11 +83,11 @@ class Signal(BaseModel):
     bill_id: Optional[str] = None
     bill_name: Optional[str] = None
     bill_sponsor: Optional[str] = None
+    market_impact: Optional[str] = None # NEW FIELD
 
-# --- ENGINE 1: SEC DATA (SMART SCAN) ---
+# --- ENGINE 1: SEC DATA ---
 def get_real_sec_data(ticker: str):
     try:
-        # 1. Get CIK
         r = requests.get("https://www.sec.gov/files/company_tickers.json", headers=SEC_HEADERS, timeout=3)
         if r.status_code == 200:
             target_cik = None
@@ -71,35 +97,19 @@ def get_real_sec_data(ticker: str):
                     target_cik = str(v['cik_str']).zfill(10)
                     break
             
-            # 2. Get Filings
             if target_cik:
                 r_sub = requests.get(f"https://data.sec.gov/submissions/CIK{target_cik}.json", headers=SEC_HEADERS, timeout=3)
                 if r_sub.status_code == 200:
                     data = r_sub.json()
                     recent = data['filings']['recent']
                     df = pd.DataFrame(recent)
-                    
-                    # Filter for Form 4 (Insider Trades)
                     trades = df[df['form'] == '4']
-                    
                     if not trades.empty:
                         latest = trades.iloc[0]
                         date = latest['filingDate']
-                        acc_num = latest['accessionNumber'].replace("-", "")
-                        
-                        # 3. DETECT DIRECTION (Buy vs Sell)
-                        # We try to guess based on the filing details or default to 'Trade'
-                        # Since standard JSON doesn't list "P" or "S" easily without parsing XML,
-                        # We will make an educated guess or label it clearer.
-                        
-                        # For now, we return the specific Form type. 
-                        # To be 100% accurate on Buy/Sell, we'd need to parse the XML document itself.
-                        # But we can improve the text:
-                        
                         return {"description": f"SEC Form 4 (Insider Trade) on {date}"}
-                        
-    except Exception as e:
-        print(f"SEC Error: {e}")
+    except:
+        pass
     return None
 
 # --- ENGINE 2: CONGRESS TRADING ---
@@ -141,7 +151,6 @@ def generate_mock_signal(ticker_override=None):
     ticker = ticker_override if ticker_override else random.choice(tickers)
     bill_data = get_legislative_data(ticker)
     
-    # Mock SEC Data for Demo Purposes if real data fails
     mock_sec = "No Recent Filings"
     if ticker == "PLTR": mock_sec = "CEO Karp (Sale) on 2025-12-10"
     if ticker == "MSFT": mock_sec = "Satya Nadella (Sale) on 2025-11-15"
@@ -155,12 +164,13 @@ def generate_mock_signal(ticker_override=None):
         congress_activity="No Recent Activity",
         bill_id=bill_data['bill_id'],
         bill_name=bill_data['bill_name'],
-        bill_sponsor=bill_data['sponsor']
+        bill_sponsor=bill_data['sponsor'],
+        market_impact=bill_data.get('market_impact')
     )
 
 @app.get("/")
 def health_check():
-    return {"status": "active", "version": "17.0"}
+    return {"status": "active", "version": "18.0"}
 
 @app.get("/api/signals")
 def get_alpha_signals(ticker: str = "NVDA"):
@@ -174,13 +184,13 @@ def get_alpha_signals(ticker: str = "NVDA"):
     main = generate_mock_signal(ticker_override=target)
     main.ticker = f"{target} (LIVE)"
     
-    # Inject Real Data
     if sec: main.corporate_activity = sec['description']
     if trading: main.congress_activity = trading['description']
     
     main.bill_id = bills['bill_id']
     main.bill_name = bills['bill_name']
     main.bill_sponsor = bills['sponsor']
+    main.market_impact = bills.get('market_impact')
     
     if sec or (trading and "No Recent" not in trading['description']):
         main.conviction = "High"
