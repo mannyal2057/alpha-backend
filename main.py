@@ -20,38 +20,41 @@ def get_legislative_intel(ticker: str):
     
     # 1. THE "BUY" LIST (Pro Terminal)
     if t == "LMT":
-        return {"bill_id": "H.R. 8070", "bill_name": "Nat. Defense Authorization Act", "impact_score": 95, "market_impact": "Direct Beneficiary: Increases procurement for F-35 & missile systems."}
+        return {"bill_id": "H.R. 8070", "bill_name": "Nat. Defense Authorization Act", "bill_sponsor": "Rep. Mike Rogers (R-AL)", "impact_score": 95, "market_impact": "Direct Beneficiary: Increases procurement for F-35 & missile systems."}
     if t == "NVDA":
-        return {"bill_id": "S. 2714", "bill_name": "AI Safety & Innovation Act", "impact_score": 88, "market_impact": "Bullish: Establishes government-backed AI infrastructure standards."}
+        return {"bill_id": "S. 2714", "bill_name": "AI Safety & Innovation Act", "bill_sponsor": "Sen. Chuck Schumer (D-NY)", "impact_score": 88, "market_impact": "Bullish: Establishes government-backed AI infrastructure standards."}
     if t == "SOFI":
-        return {"bill_id": "H.R. 4763", "bill_name": "Fin. Innovation Act", "impact_score": 82, "market_impact": "Bullish: Clarifies crypto-banking rules, favoring compliant fintechs."}
+        return {"bill_id": "H.R. 4763", "bill_name": "Fin. Innovation Act", "bill_sponsor": "Rep. Glenn Thompson (R-PA)", "impact_score": 82, "market_impact": "Bullish: Clarifies crypto-banking rules, favoring compliant fintechs."}
     if t == "AA":
-        return {"bill_id": "H.R. 3668", "bill_name": "Pipeline Review Act", "impact_score": 78, "market_impact": "Bullish: Reduces energy costs for heavy industrial manufacturing."}
+        return {"bill_id": "H.R. 3668", "bill_name": "Pipeline Review Act", "bill_sponsor": "Rep. Garret Graves (R-LA)", "impact_score": 78, "market_impact": "Bullish: Reduces energy costs for heavy industrial manufacturing."}
     if t == "CALM":
-        return {"bill_id": "H.R. 4368", "bill_name": "Agriculture Appropriations", "impact_score": 75, "market_impact": "Bullish: Subsidies for domestic food production stability."}
+        return {"bill_id": "H.R. 4368", "bill_name": "Agriculture Appropriations", "bill_sponsor": "Rep. Andy Harris (R-MD)", "impact_score": 75, "market_impact": "Bullish: Subsidies for domestic food production stability."}
 
     # 2. THE "SELL" LIST (Pro Terminal)
     if t == "PLTR":
-        return {"bill_id": "S. 2714", "bill_name": "AI Safety & Innovation Act", "impact_score": 40, "market_impact": "Neutral/Bearish: Compliance costs may slow gov contract velocity."}
+        return {"bill_id": "S. 2714", "bill_name": "AI Safety & Innovation Act", "bill_sponsor": "Sen. Chuck Schumer (D-NY)", "impact_score": 40, "market_impact": "Neutral/Bearish: Compliance costs may slow gov contract velocity."}
     if t == "AAPL":
-        return {"bill_id": "H.R. 1", "bill_name": "Lower Energy Costs Act", "impact_score": 30, "market_impact": "Low Impact: Energy costs are negligible for software margins."}
+        return {"bill_id": "H.R. 1", "bill_name": "Lower Energy Costs Act", "bill_sponsor": "Rep. Steve Scalise (R-LA)", "impact_score": 30, "market_impact": "Low Impact: Energy costs are negligible for software margins."}
     if t == "NFLX":
-        return {"bill_id": "S. 686", "bill_name": "RESTRICT Act", "impact_score": 25, "market_impact": "Bearish: Potential data privacy restrictions impacting ad-tier revenue."}
+        return {"bill_id": "S. 686", "bill_name": "RESTRICT Act", "bill_sponsor": "Sen. Mark Warner (D-VA)", "impact_score": 25, "market_impact": "Bearish: Potential data privacy restrictions impacting ad-tier revenue."}
     if t == "TSLA":
-        return {"bill_id": "H.R. 4468", "bill_name": "Choice in Automobile Retail Sales", "impact_score": 35, "market_impact": "Bearish: Rolls back some EV mandates, increasing competition from hybrids."}
+        return {"bill_id": "H.R. 4468", "bill_name": "Choice in Automobile Retail Sales", "bill_sponsor": "Rep. Tim Walberg (R-MI)", "impact_score": 35, "market_impact": "Bearish: Rolls back some EV mandates, increasing competition from hybrids."}
+    if t == "ANGO":
+         return {"bill_id": "H.R. 5525", "bill_name": "Appropriations Act", "bill_sponsor": "Rep. Kevin McCarthy (R-CA)", "impact_score": 50, "market_impact": "Neutral: Standard healthcare funding."}
+
 
     # 3. THE "LEGISLATION TRACKER" LIST (Restored for Page 3)
     if t in ["XOM", "CVX", "BP"]:
-        return {"bill_id": "H.R. 1", "bill_name": "Lower Energy Costs Act", "impact_score": 90, "market_impact": "Highly Bullish: Expands offshore drilling leases and speeds up permits."}
+        return {"bill_id": "H.R. 1", "bill_name": "Lower Energy Costs Act", "bill_sponsor": "Rep. Steve Scalise (R-LA)", "impact_score": 90, "market_impact": "Highly Bullish: Expands offshore drilling leases and speeds up permits."}
     if t in ["COIN", "MARA", "RIOT"]:
-        return {"bill_id": "H.R. 4763", "bill_name": "Fin. Innovation Act", "impact_score": 85, "market_impact": "Bullish: Creates regulatory clarity for digital assets."}
+        return {"bill_id": "H.R. 4763", "bill_name": "Fin. Innovation Act", "bill_sponsor": "Rep. Glenn Thompson (R-PA)", "impact_score": 85, "market_impact": "Bullish: Creates regulatory clarity for digital assets."}
     if t in ["MSFT", "GOOGL", "META"]:
-        return {"bill_id": "S. 2714", "bill_name": "AI Safety & Innovation Act", "impact_score": 80, "market_impact": "Bullish: Entrenched tech giants can easily afford compliance costs."}
+        return {"bill_id": "S. 2714", "bill_name": "AI Safety & Innovation Act", "bill_sponsor": "Sen. Chuck Schumer (D-NY)", "impact_score": 80, "market_impact": "Bullish: Entrenched tech giants can easily afford compliance costs."}
     if t == "IBM":
-        return {"bill_id": "H.R. 5525", "bill_name": "Continuing Appropriations Act", "impact_score": 50, "market_impact": "Neutral: General government IT contract maintenance."}
+        return {"bill_id": "H.R. 5525", "bill_name": "Continuing Appropriations Act", "bill_sponsor": "Rep. Kevin McCarthy (R-CA)", "impact_score": 50, "market_impact": "Neutral: General government IT contract maintenance."}
 
-    # DEFAULT FALLBACK
-    return {"bill_id": "H.R. 5525", "bill_name": "Appropriations Act", "impact_score": 50, "market_impact": "Neutral: General market monitoring."}
+    # DEFAULT FALLBACK (Prevents Crashes)
+    return {"bill_id": "H.R. 5525", "bill_name": "Appropriations Act", "bill_sponsor": "Cmte. On Appropriations", "impact_score": 50, "market_impact": "Neutral: General market monitoring."}
 
 # --- LIFESPAN ---
 @asynccontextmanager
@@ -76,6 +79,7 @@ class Signal(BaseModel):
     congress_activity: str
     bill_id: str
     bill_name: str
+    bill_sponsor: str # Ensure this exists
     market_impact: str
 
 # --- ENGINE: LIVE MARKET DATA ---
@@ -150,6 +154,7 @@ def get_signals(ticker: str = "NVDA"):
         "congress_activity": "Pelosi (Call Options)" if t == "NVDA" else "No Recent Activity",
         "bill_id": leg['bill_id'],
         "bill_name": leg['bill_name'],
+        "bill_sponsor": leg['bill_sponsor'], # CRITICAL FIX
         "market_impact": leg['market_impact']
     }]
 
