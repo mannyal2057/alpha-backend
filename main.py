@@ -5,23 +5,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import requests
-import pandas as pd
 import yfinance as yf
 
-# --- CONFIGURATION ---
-# SEC requires a proper User-Agent. We use a generic admin email.
-SEC_HEADERS = {
-    "User-Agent": "AlphaInsider/10.0 (admin@alphainsider.io)",
-    "Accept-Encoding": "gzip, deflate",
-    "Host": "data.sec.gov"
-}
-
-# --- GLOBAL CACHE (The Secret Sauce) ---
-# We store the SEC ID list here so we don't download it 100 times.
-CIK_CACHE = {}
-
-# --- SECTOR PEERS (Updated with VERO) ---
+# --- SECTOR PEERS ---
 SECTOR_PEERS = {
     # SEMICONDUCTORS / AI
     "NVDA": ["AMD", "INTC", "AVGO", "QCOM", "TSM", "MU", "ARM", "TXN"],
@@ -31,7 +17,7 @@ SECTOR_PEERS = {
     "F":    ["GM", "TM", "HMC", "TSLA", "RIVN", "LCID", "STLA", "VWAGY"],
     "TSLA": ["RIVN", "LCID", "F", "GM", "TM", "BYDDF", "NIO", "XPEV"],
     
-    # MED-TECH / DEVICES (Added VERO)
+    # MED-TECH / DEVICES
     "VERO": ["PODD", "DXCM", "MDT", "EW", "BSX", "ISRG", "ABT", "ZBH"],
     "PODD": ["VERO", "DXCM", "MDT", "EW", "BSX", "ISRG", "ABT", "ZBH"],
     
@@ -45,6 +31,9 @@ SECTOR_PEERS = {
     
     # AIRLINES
     "AAL":  ["DAL", "UAL", "LUV", "SAVE", "JBLU", "ALK", "HA", "SKYW"],
+    
+    # BIG TECH
+    "AAPL": ["MSFT", "GOOGL", "AMZN", "META", "NFLX", "TSLA", "NVDA", "ORCL"],
     
     # OIL & GAS
     "XOM":  ["CVX", "SHEL", "BP", "TTE", "COP", "EOG", "OXY", "SLB"]
@@ -75,29 +64,12 @@ def get_legislative_intel(ticker: str):
 
     return {"bill_id": "H.R. 5525", "bill_name": "Appropriations Act", "bill_sponsor": "Congress", "impact_score": 50, "market_impact": "Neutral: General monitoring."}
 
-# --- SYSTEM BOOT (CACHE LOADER) ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v10.0 (SEC Cache Engine).")
-    try:
-        # Download the Master List ONCE at startup
-        print("⏳ Downloading SEC CIK Database (This happens once)...")
-        r = requests.get("https://www.sec.gov/files/company_tickers.json", headers=SEC_HEADERS, timeout=5)
-        if r.status_code == 200:
-            data = r.json()
-            for key in data:
-                entry = data[key]
-                # Map "NVDA" -> "0001045810"
-                CIK_CACHE[entry['ticker']] = str(entry['cik_str']).zfill(10)
-            print(f"✅ SEC Database Loaded: {len(CIK_CACHE)} companies indexed.")
-        else:
-            print("❌ Failed to load SEC Database.")
-    except Exception as e:
-        print(f"❌ SEC Boot Error: {e}")
-    
+    print(f"💎 SYSTEM BOOT: AlphaInsider v11.0 (Direct YF Insider Feed).")
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="10.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="11.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # --- ENGINE 1: LIVE MARKET DATA ---
@@ -122,35 +94,35 @@ def get_real_market_data(ticker: str):
         return {"price": price_str, "vol": vol_str, "fin": fin_str}
     except: return {"price": "N/A", "vol": "N/A", "fin": "N/A"}
 
-# --- ENGINE 2: LIVE SEC DATA (OPTIMIZED) ---
+# --- ENGINE 2: LIVE INSIDER DATA (YFINANCE DIRECT) ---
 def get_live_sec_filings(ticker: str):
     try:
-        # 1. FAST LOOKUP (No download needed)
-        target_cik = CIK_CACHE.get(ticker.upper())
+        stock = yf.Ticker(ticker)
+        # yfinance has a dedicated property for this!
+        trades = stock.insider_transactions
         
-        if target_cik:
-            # 2. Fetch specific company filings (Fast)
-            sub_url = f"https://data.sec.gov/submissions/CIK{target_cik}.json"
-            r_sub = requests.get(sub_url, headers=SEC_HEADERS, timeout=2.0)
+        if trades is not None and not trades.empty:
+            # Get the most recent transaction
+            latest = trades.iloc[0]
             
-            if r_sub.status_code == 200:
-                filings = r_sub.json().get('filings', {}).get('recent', {})
-                df = pd.DataFrame(filings)
+            # Extract date - usually in 'Start Date' or index
+            if 'Start Date' in latest:
+                date_val = latest['Start Date']
+            else:
+                date_val = trades.index[0]
                 
-                # Check for Form 4 (Trades)
-                trades = df[df['form'] == '4']
-                if not trades.empty:
-                    date = trades.iloc[0]['filingDate']
-                    return f"Form 4 (Trade) {date}"
-                
-                # Check for 8-K (News)
-                news = df[df['form'] == '8-K']
-                if not news.empty:
-                    date = news.iloc[0]['filingDate']
-                    return f"8-K (News) {date}"
-
+            # Format nicely
+            date_str = str(date_val).split(' ')[0]
+            
+            # Extract Text (e.g. "Sale", "Purchase")
+            text = latest.get('Text', 'Trade')
+            who = latest.get('Insider', 'Exec')
+            
+            return f"{who} ({text}) on {date_str}"
+            
         return "No Recent Filings"
-    except:
+    except Exception as e:
+        print(f"Insider Data Error: {e}")
         return "No Recent Filings"
 
 @app.get("/api/signals")
@@ -165,7 +137,7 @@ def get_signals(ticker: str = "NVDA"):
     for sym in all_tickers:
         m = get_real_market_data(sym)
         l = get_legislative_intel(sym)
-        sec_data = get_live_sec_filings(sym) # Now fast & cached
+        sec_data = get_live_sec_filings(sym) 
         
         score = l['impact_score']
         
