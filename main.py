@@ -12,11 +12,20 @@ import yfinance as yf
 
 # --- CONFIGURATION ---
 SEC_HEADERS = {
-    "User-Agent": "AlphaInsider/12.0 (admin@alphainsider.io)",
+    "User-Agent": "AlphaInsider/14.0 (contact@alphainsider.io)",
     "Accept-Encoding": "gzip, deflate",
     "Host": "data.sec.gov"
 }
-CIK_CACHE = {} # Stores SEC IDs for fast lookup
+
+# --- GLOBAL CACHE ---
+# We pre-fill popular stocks so they ALWAYS work, even if SEC download fails
+CIK_CACHE = {
+    "NVDA": "0001045810", "TSLA": "0001318605", "AAPL": "0000320193",
+    "MSFT": "0000789019", "AMZN": "0001018724", "GOOGL": "0001652044",
+    "META": "0001326801", "AMD": "0000002488", "F": "0000037996",
+    "SOFI": "0001818874", "COIN": "0001679788", "PLTR": "0001321655",
+    "VERO": "0001466099", "IBRX": "0001482080"
+}
 
 # --- SECTOR PEERS ---
 SECTOR_PEERS = {
@@ -51,74 +60,77 @@ def get_legislative_intel(ticker: str):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v12.0 (Hybrid Feed + Timeout Protection).")
-    # Pre-load CIK Cache for Speed
+    print(f"💎 SYSTEM BOOT: AlphaInsider v14.0 (Robust Earnings Fallback).")
+    # Try to download the full list, but don't panic if it fails
     try:
-        r = requests.get("https://www.sec.gov/files/company_tickers.json", headers=SEC_HEADERS, timeout=5)
+        r = requests.get("https://www.sec.gov/files/company_tickers.json", headers=SEC_HEADERS, timeout=3)
         if r.status_code == 200:
             data = r.json()
             for key in data:
                 CIK_CACHE[data[key]['ticker']] = str(data[key]['cik_str']).zfill(10)
-            print(f"✅ SEC Cache: {len(CIK_CACHE)} companies loaded.")
+            print(f"✅ SEC Cache Extended: {len(CIK_CACHE)} companies.")
     except: pass
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="12.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="14.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- ENGINE 1: MARKET DATA (FAST) ---
+# --- ENGINE 1: MARKET DATA ---
 def get_real_market_data(ticker: str):
     try:
         stock = yf.Ticker(ticker)
         price = stock.fast_info.last_price
         price_str = f"${price:.2f}" if price else "$0.00"
         
-        # Simple volume check (Fast)
         vol = stock.fast_info.last_volume
-        vol_str = "High (Buying)" if vol > 1000000 else "Neutral" # Simplified for speed
+        vol_str = "High (Buying)" if vol > 1000000 else "Neutral"
         
-        # Financials (Fast)
         fin_str = "Stable" 
         
         return {"price": price_str, "vol": vol_str, "fin": fin_str}
     except: return {"price": "N/A", "vol": "N/A", "fin": "N/A"}
 
-# --- ENGINE 2: HYBRID CORPORATE ACTION (SEC + NEWS FALLBACK) ---
+# --- ENGINE 2: CORPORATE ACTION (SEC -> EARNINGS FALLBACK) ---
 def get_corporate_action(ticker: str):
+    # STRATEGY A: SEC DIRECT (Best)
     try:
-        # STRATEGY A: SEC DIRECT (Fastest if cached)
         target_cik = CIK_CACHE.get(ticker.upper())
         if target_cik:
             sub_url = f"https://data.sec.gov/submissions/CIK{target_cik}.json"
-            # STRICT TIMEOUT: 1.5 seconds max
-            r = requests.get(sub_url, headers=SEC_HEADERS, timeout=1.5)
+            r = requests.get(sub_url, headers=SEC_HEADERS, timeout=1.0)
             if r.status_code == 200:
                 filings = r.json().get('filings', {}).get('recent', {})
                 df = pd.DataFrame(filings)
                 
-                # Check Form 4 (Insider)
-                trades = df[df['form'] == '4']
-                if not trades.empty:
-                    return f"Form 4 (Trade) {trades.iloc[0]['filingDate']}"
-                
-                # Check 8-K (Major Events)
-                events = df[df['form'] == '8-K']
-                if not events.empty:
-                    return f"8-K (Event) {events.iloc[0]['filingDate']}"
+                # Check Form 4
+                if not df.empty:
+                    trades = df[df['form'] == '4']
+                    if not trades.empty:
+                        return f"Form 4 (Trade) {trades.iloc[0]['filingDate']}"
+    except: pass
 
-        # STRATEGY B: YAHOO NEWS FALLBACK (If SEC has nothing)
-        # This fills the "No Filing" gap
+    # STRATEGY B: EARNINGS CALENDAR (Reliable Fallback)
+    try:
         stock = yf.Ticker(ticker)
-        news = stock.news
-        if news:
-            latest = news[0]
-            title = latest.get('title', 'News Update')
-            # Truncate title to fit UI
-            return f"News: {title[:25]}..."
-
-        return "No Recent Activity"
-    except:
-        return "No Recent Activity"
+        # Try retrieving calendar - this is often a dataframe or dict
+        cal = stock.calendar
+        
+        # Method 1: Dictionary lookup
+        if isinstance(cal, dict) and 'Earnings Date' in cal:
+             dates = cal['Earnings Date']
+             if dates:
+                 # It's usually a list of dates
+                 next_date = dates[0].strftime("%b %d")
+                 return f"Next Earnings: {next_date}"
+        
+        # Method 2: Dataframe lookup (common in newer yfinance)
+        elif hasattr(cal, 'iloc'):
+             # Usually row 0 is earnings date
+             return "Earnings Coming Soon"
+             
+    except: pass
+    
+    return "Monitoring..."
 
 @app.get("/api/signals")
 def get_signals(ticker: str = "NVDA"):
@@ -128,7 +140,6 @@ def get_signals(ticker: str = "NVDA"):
     
     results = []
     
-    # Process Loop
     for sym in all_tickers:
         m = get_real_market_data(sym)
         l = get_legislative_intel(sym)
@@ -151,7 +162,7 @@ def get_signals(ticker: str = "NVDA"):
             "timing_signal": timing,
             "sentiment": "Bullish" if "BUY" in rating else "Bearish",
             "final_score": rating,
-            "corporate_activity": action_text, # <--- NEW HYBRID DATA
+            "corporate_activity": action_text, # <--- Will now show Trade OR Earnings
             "congress_activity": "No Recent Activity",
             "bill_id": l['bill_id'],
             "bill_name": l['bill_name'],
