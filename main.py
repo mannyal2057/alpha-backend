@@ -13,7 +13,7 @@ import yfinance as yf
 
 # --- CONFIGURATION ---
 SEC_HEADERS = {
-    "User-Agent": "AlphaInsider/15.0 (contact@alphainsider.io)",
+    "User-Agent": "AlphaInsider/16.0 (admin@alphainsider.io)",
     "Accept-Encoding": "gzip, deflate",
     "Host": "data.sec.gov"
 }
@@ -47,7 +47,7 @@ def get_legislative_intel(ticker: str):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v15.0 (Date Filters + Buy/Sell Logic).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v16.0 (Smart Text Formatter).")
     try:
         r = requests.get("https://www.sec.gov/files/company_tickers.json", headers=SEC_HEADERS, timeout=3)
         if r.status_code == 200:
@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
     except: pass
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="15.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="16.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # --- ENGINE 1: MARKET DATA ---
@@ -72,37 +72,46 @@ def get_real_market_data(ticker: str):
         return {"price": price_str, "vol": vol_str, "fin": fin_str}
     except: return {"price": "N/A", "vol": "N/A", "fin": "N/A"}
 
-# --- ENGINE 2: HYBRID CORPORATE ACTION ---
+# --- ENGINE 2: SMART CORPORATE ACTION ---
 def get_corporate_action(ticker: str, is_primary: bool):
-    # FILTER: Ignore trades older than 18 months (approx 540 days)
-    cutoff_date = datetime.now() - timedelta(days=540)
+    # STRICT FILTER: Ignore trades older than 1 Year (365 days)
+    cutoff_date = datetime.now() - timedelta(days=365)
     
-    # STRATEGY A: YFINANCE (Detailed Buy/Sell) - Only for Primary Ticker or big stocks
-    # This gives us the "Text" field we need.
+    # STRATEGY A: YFINANCE (Primary Search)
     if is_primary:
         try:
             stock = yf.Ticker(ticker)
             trades = stock.insider_transactions
             if trades is not None and not trades.empty:
+                # Sort by date descending (Newest first)
+                if 'Start Date' in trades.columns:
+                    trades = trades.sort_values(by='Start Date', ascending=False)
+                
                 latest = trades.iloc[0]
                 
-                # Check Date
+                # Get Date
                 trade_date = None
                 if 'Start Date' in latest: trade_date = latest['Start Date']
                 elif isinstance(latest.name, pd.Timestamp): trade_date = latest.name
                 
+                # Filter Old Data
                 if trade_date and pd.to_datetime(trade_date) > cutoff_date:
-                    t_str = str(trade_date).split(' ')[0]
-                    # EXTRACT BUY/SELL TEXT
-                    text = latest.get('Text', 'Trade')
-                    who = latest.get('Insider', 'Exec')
-                    # Shorten names for UI
-                    if " " in str(who): who = str(who).split(" ")[-1] # Last name only
+                    date_fmt = pd.to_datetime(trade_date).strftime('%b %d') # "Jan 12"
                     
-                    return f"{who} ({text}) on {t_str}"
+                    # SMART TEXT FORMATTER
+                    raw_text = str(latest.get('Text', 'Trade'))
+                    who = str(latest.get('Insider', 'Exec')).split(' ')[-1] # Last name only
+                    
+                    action = "Trade"
+                    if "Sale" in raw_text or "Sold" in raw_text: action = "Sold"
+                    elif "Purchase" in raw_text or "Bought" in raw_text: action = "Bought"
+                    
+                    # Return Clean String: "Musk (Sold) Jan 12"
+                    return f"{who} ({action}) {date_fmt}"
+                    
         except: pass
 
-    # STRATEGY B: SEC DIRECT (Fast Date Check) - For Competitors
+    # STRATEGY B: SEC DIRECT (Competitors)
     try:
         target_cik = CIK_CACHE.get(ticker.upper())
         if target_cik:
@@ -115,13 +124,14 @@ def get_corporate_action(ticker: str, is_primary: bool):
                     trades = df[df['form'] == '4']
                     if not trades.empty:
                         raw_date = trades.iloc[0]['filingDate']
-                        # Date Check
+                        # Strict Date Filter
                         if pd.to_datetime(raw_date) > cutoff_date:
-                             return f"Form 4 (Trade) {raw_date}"
+                             # Format Date nicely
+                             nice_date = pd.to_datetime(raw_date).strftime('%b %d')
+                             return f"Form 4 (Trade) {nice_date}"
     except: pass
 
-    # STRATEGY C: FALLBACK
-    return "Monitoring..."
+    return "No Recent Activity"
 
 @app.get("/api/signals")
 def get_signals(ticker: str = "NVDA"):
@@ -132,7 +142,7 @@ def get_signals(ticker: str = "NVDA"):
     results = []
     
     for sym in all_tickers:
-        is_primary = (sym == t) # Only prioritize the searched stock
+        is_primary = (sym == t)
         
         m = get_real_market_data(sym)
         l = get_legislative_intel(sym)
