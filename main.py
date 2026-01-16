@@ -10,62 +10,73 @@ import pandas as pd
 import yfinance as yf
 
 # --- CONFIGURATION ---
-SEC_HEADERS = {"User-Agent": "AlphaInsider/4.0", "Accept-Encoding": "gzip, deflate", "Host": "data.sec.gov"}
+SEC_HEADERS = {"User-Agent": "AlphaInsider/5.0", "Accept-Encoding": "gzip, deflate", "Host": "data.sec.gov"}
 CONGRESS_API_KEY = os.getenv("CONGRESS_API_KEY") 
 CONGRESS_API_URL = os.getenv("CONGRESS_API_URL", "https://api.quiverquant.com/beta/live/congresstrading") 
 
-# --- LEGISLATIVE INTELLIGENCE ENGINE (ALL TICKERS RESTORED) ---
+# --- SECTOR DATABASE (COMPETITOR MAPPING) ---
+SECTOR_PEERS = {
+    # SEMICONDUCTORS
+    "NVDA": ["AMD", "INTC", "AVGO", "QCOM", "TSM"],
+    "AMD":  ["NVDA", "INTC", "AVGO", "QCOM", "TSM"],
+    "INTC": ["AMD", "NVDA", "TSM", "TXN", "QCOM"],
+    
+    # BIG TECH
+    "MSFT": ["AAPL", "GOOGL", "AMZN", "META", "ORCL"],
+    "AAPL": ["MSFT", "GOOGL", "AMZN", "META", "SONY"],
+    "GOOGL":["MSFT", "AAPL", "AMZN", "META", "SNAP"],
+    
+    # BANKING & FINTECH
+    "JPM":  ["BAC", "WFC", "C", "GS", "MS"],
+    "BAC":  ["JPM", "WFC", "C", "GS", "MS"],
+    "COIN": ["HOOD", "SQ", "PYPL", "MARA", "RIOT"],
+    "SOFI": ["LC", "UPST", "ALLY", "COIN", "HOOD"],
+
+    # DEFENSE
+    "LMT":  ["RTX", "NOC", "GD", "BA", "LH"],
+    "RTX":  ["LMT", "NOC", "GD", "BA", "GE"],
+    
+    # ENERGY
+    "XOM":  ["CVX", "SHEL", "BP", "TTE", "COP"],
+    "CVX":  ["XOM", "SHEL", "BP", "TTE", "OXY"],
+    
+    # PHARMA
+    "PFE":  ["MRK", "JNJ", "LLY", "ABBV", "BMY"],
+    "LLY":  ["NVO", "PFE", "MRK", "JNJ", "AMGN"],
+    
+    # EV / AUTO
+    "TSLA": ["RIVN", "LCID", "F", "GM", "TM"],
+    "F":    ["GM", "TSLA", "TM", "HMC", "STLA"]
+}
+
+# --- LEGISLATIVE INTELLIGENCE ENGINE ---
 def get_legislative_intel(ticker: str):
     t = ticker.upper()
     
-    # 1. THE "BUY" LIST (Pro Terminal)
-    if t == "LMT":
-        return {"bill_id": "H.R. 8070", "bill_name": "Nat. Defense Authorization Act", "bill_sponsor": "Rep. Mike Rogers (R-AL)", "impact_score": 95, "market_impact": "Direct Beneficiary: Increases procurement for F-35 & missile systems."}
-    if t == "NVDA":
+    # Known Legislation Map
+    if t in ["NVDA", "AMD", "MSFT", "GOOGL", "META", "PLTR", "TSM", "AVGO"]:
         return {"bill_id": "S. 2714", "bill_name": "AI Safety & Innovation Act", "bill_sponsor": "Sen. Chuck Schumer (D-NY)", "impact_score": 88, "market_impact": "Bullish: Establishes government-backed AI infrastructure standards."}
-    if t == "SOFI":
-        return {"bill_id": "H.R. 4763", "bill_name": "Fin. Innovation Act", "bill_sponsor": "Rep. Glenn Thompson (R-PA)", "impact_score": 82, "market_impact": "Bullish: Clarifies crypto-banking rules, favoring compliant fintechs."}
-    if t == "AA":
-        return {"bill_id": "H.R. 3668", "bill_name": "Pipeline Review Act", "bill_sponsor": "Rep. Garret Graves (R-LA)", "impact_score": 78, "market_impact": "Bullish: Reduces energy costs for heavy industrial manufacturing."}
-    if t == "CALM":
-        return {"bill_id": "H.R. 4368", "bill_name": "Agriculture Appropriations", "bill_sponsor": "Rep. Andy Harris (R-MD)", "impact_score": 75, "market_impact": "Bullish: Subsidies for domestic food production stability."}
-
-    # 2. THE "SELL" LIST (Pro Terminal)
-    if t == "PLTR":
-        return {"bill_id": "S. 2714", "bill_name": "AI Safety & Innovation Act", "bill_sponsor": "Sen. Chuck Schumer (D-NY)", "impact_score": 40, "market_impact": "Neutral/Bearish: Compliance costs may slow gov contract velocity."}
-    if t == "AAPL":
-        return {"bill_id": "H.R. 1", "bill_name": "Lower Energy Costs Act", "bill_sponsor": "Rep. Steve Scalise (R-LA)", "impact_score": 30, "market_impact": "Low Impact: Energy costs are negligible for software margins."}
-    if t == "NFLX":
-        return {"bill_id": "S. 686", "bill_name": "RESTRICT Act", "bill_sponsor": "Sen. Mark Warner (D-VA)", "impact_score": 25, "market_impact": "Bearish: Potential data privacy restrictions impacting ad-tier revenue."}
-    if t == "TSLA":
-        return {"bill_id": "H.R. 4468", "bill_name": "Choice in Automobile Retail Sales", "bill_sponsor": "Rep. Tim Walberg (R-MI)", "impact_score": 35, "market_impact": "Bearish: Rolls back some EV mandates, increasing competition from hybrids."}
-    if t == "ANGO":
-         return {"bill_id": "H.R. 5525", "bill_name": "Appropriations Act", "bill_sponsor": "Rep. Kevin McCarthy (R-CA)", "impact_score": 50, "market_impact": "Neutral: Standard healthcare funding."}
-
-
-    # 3. THE "LEGISLATION TRACKER" LIST (Restored for Page 3)
-    if t in ["XOM", "CVX", "BP"]:
-        return {"bill_id": "H.R. 1", "bill_name": "Lower Energy Costs Act", "bill_sponsor": "Rep. Steve Scalise (R-LA)", "impact_score": 90, "market_impact": "Highly Bullish: Expands offshore drilling leases and speeds up permits."}
-    if t in ["COIN", "MARA", "RIOT"]:
+    if t in ["XOM", "CVX", "BP", "SHEL", "OXY", "COP"]:
+        return {"bill_id": "H.R. 1", "bill_name": "Lower Energy Costs Act", "bill_sponsor": "Rep. Steve Scalise (R-LA)", "impact_score": 90, "market_impact": "Highly Bullish: Expands offshore drilling leases."}
+    if t in ["COIN", "MARA", "RIOT", "HOOD", "SQ", "PYPL"]:
         return {"bill_id": "H.R. 4763", "bill_name": "Fin. Innovation Act", "bill_sponsor": "Rep. Glenn Thompson (R-PA)", "impact_score": 85, "market_impact": "Bullish: Creates regulatory clarity for digital assets."}
-    if t in ["MSFT", "GOOGL", "META"]:
-        return {"bill_id": "S. 2714", "bill_name": "AI Safety & Innovation Act", "bill_sponsor": "Sen. Chuck Schumer (D-NY)", "impact_score": 80, "market_impact": "Bullish: Entrenched tech giants can easily afford compliance costs."}
-    if t == "IBM":
-        return {"bill_id": "H.R. 5525", "bill_name": "Continuing Appropriations Act", "bill_sponsor": "Rep. Kevin McCarthy (R-CA)", "impact_score": 50, "market_impact": "Neutral: General government IT contract maintenance."}
+    if t in ["LMT", "RTX", "NOC", "GD", "BA"]:
+        return {"bill_id": "H.R. 8070", "bill_name": "Nat. Defense Authorization", "bill_sponsor": "Rep. Mike Rogers (R-AL)", "impact_score": 95, "market_impact": "Direct Beneficiary: Increases defense procurement budget."}
+    if t in ["PFE", "MRK", "JNJ", "LLY"]:
+        return {"bill_id": "H.R. 5525", "bill_name": "Health Appropriations", "bill_sponsor": "Cmte. On Appropriations", "impact_score": 60, "market_impact": "Neutral: Standard healthcare funding renewal."}
 
-    # DEFAULT FALLBACK (Prevents Crashes)
+    # Default
     return {"bill_id": "H.R. 5525", "bill_name": "Appropriations Act", "bill_sponsor": "Cmte. On Appropriations", "impact_score": 50, "market_impact": "Neutral: General market monitoring."}
 
 # --- LIFESPAN ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v4.0 (Unified Data Engine).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v5.0 (Sector Scanner Online).")
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="4.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="5.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- DATA MODELS ---
 class Signal(BaseModel):
     ticker: str
     price: str                  
@@ -79,25 +90,24 @@ class Signal(BaseModel):
     congress_activity: str
     bill_id: str
     bill_name: str
-    bill_sponsor: str # Ensure this exists
+    bill_sponsor: str
     market_impact: str
 
-# --- ENGINE: LIVE MARKET DATA ---
 def get_real_market_data(ticker: str):
     try:
         stock = yf.Ticker(ticker)
-        # Fast Info
+        # Price
         price = stock.fast_info.last_price
         price_str = f"${price:.2f}" if price else "$0.00"
         
-        # Volume
+        # Volume Logic
         history = stock.history(period="5d")
         if not history.empty:
             avg_vol = history['Volume'].mean()
             curr_vol = history['Volume'].iloc[-1]
-            if curr_vol > avg_vol * 1.3: vol_str = "High (Instit. Buying)"
-            elif curr_vol < avg_vol * 0.7: vol_str = "Low (Drying Up)"
-            else: vol_str = "Moderate (Steady)"
+            if curr_vol > avg_vol * 1.2: vol_str = "High (Buying)"
+            elif curr_vol < avg_vol * 0.8: vol_str = "Low (Selling)"
+            else: vol_str = "Neutral"
         else: vol_str = "Neutral"
 
         # Financials
@@ -107,56 +117,71 @@ def get_real_market_data(ticker: str):
             fin_str = "Profitable" if eps and eps > 0 else "Unprofitable"
         except: fin_str = "Stable"
 
-        # Earnings
-        try:
-            cal = stock.calendar
-            # yfinance structure varies, sometimes it's a dict, sometimes dataframe
-            if isinstance(cal, dict) and 'Earnings Date' in cal:
-                earn_str = cal['Earnings Date'][0].strftime("%b %d")
-            else:
-                earn_str = "TBD"
-        except: earn_str = "TBD"
-
-        return {"price": price_str, "vol": vol_str, "fin": fin_str, "earn": earn_str}
-
+        return {"price": price_str, "vol": vol_str, "fin": fin_str}
     except:
-        return {"price": "N/A", "vol": "N/A", "fin": "N/A", "earn": "N/A"}
+        return {"price": "N/A", "vol": "N/A", "fin": "N/A"}
 
 @app.get("/api/signals")
 def get_signals(ticker: str = "NVDA"):
-    t = ticker.upper()
-    market_data = get_real_market_data(t)
-    leg = get_legislative_intel(t)
+    main_ticker = ticker.upper()
     
-    score_val = leg['impact_score']
+    # 1. IDENTIFY COMPETITORS
+    competitors = SECTOR_PEERS.get(main_ticker, ["SPY", "QQQ", "IWM", "DIA", "GLD"]) # Default to indices if unknown
     
-    # DYNAMIC SCORING
-    if score_val > 80:
-        final_rating = "STRONG BUY"
-        timing = "Accumulate"
-    elif score_val < 45:
-        final_rating = "SELL"
-        timing = "Exit"
-    else:
-        final_rating = "HOLD"
-        timing = "Wait"
+    # Combine Main Ticker + Competitors
+    all_tickers = [main_ticker] + competitors
+    
+    results = []
+    
+    for t in all_tickers:
+        market = get_real_market_data(t)
+        leg = get_legislative_intel(t)
         
-    return [{
-        "ticker": t,
-        "price": market_data['price'],
-        "volume_signal": market_data['vol'],
-        "financial_health": f"{market_data['fin']} (Earn: {market_data['earn']})",
-        "legislation_score": leg['impact_score'],
-        "timing_signal": timing,
-        "sentiment": "Bullish" if "BUY" in final_rating else "Bearish",
-        "final_score": final_rating,
-        "corporate_activity": "Insider Selling" if t == "PLTR" else "No Recent Filings",
-        "congress_activity": "Pelosi (Call Options)" if t == "NVDA" else "No Recent Activity",
-        "bill_id": leg['bill_id'],
-        "bill_name": leg['bill_name'],
-        "bill_sponsor": leg['bill_sponsor'], # CRITICAL FIX
-        "market_impact": leg['market_impact']
-    }]
+        # SMART SCORING MODEL
+        score = leg['impact_score']
+        
+        # If legislation is neutral (50), let Technicals decide the score
+        if score == 50:
+            if "Buying" in market['vol']: score += 20 # Bump to 70 (Buy)
+            if "Selling" in market['vol']: score -= 10 # Drop to 40 (Sell)
+            if market['fin'] == "Unprofitable": score -= 5
+        
+        # Final Rating
+        if score >= 75: 
+            rating = "STRONG BUY"
+            timing = "Accumulate"
+        elif score >= 65:
+            rating = "BUY"
+            timing = "Add Dip"
+        elif score <= 40:
+            rating = "SELL"
+            timing = "Exit"
+        else:
+            rating = "HOLD"
+            timing = "Wait"
+
+        # Visual Tag
+        sentiment = "Bullish" if "BUY" in rating else "Bearish"
+        if rating == "HOLD": sentiment = "Neutral"
+
+        results.append({
+            "ticker": t,
+            "price": market['price'],
+            "volume_signal": market['vol'],
+            "financial_health": market['fin'],
+            "legislation_score": score,
+            "timing_signal": timing,
+            "sentiment": sentiment,
+            "final_score": rating,
+            "corporate_activity": "No Recent Filings", # Simplified for speed
+            "congress_activity": "No Recent Activity",
+            "bill_id": leg['bill_id'],
+            "bill_name": leg['bill_name'],
+            "bill_sponsor": leg['bill_sponsor'],
+            "market_impact": leg['market_impact']
+        })
+        
+    return results
 
 if __name__ == "__main__":
     import uvicorn
