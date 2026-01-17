@@ -11,7 +11,7 @@ import yfinance as yf
 
 # --- CONFIGURATION ---
 SEC_HEADERS = {
-    "User-Agent": "AlphaInsider/18.0 (admin@alphainsider.io)",
+    "User-Agent": "AlphaInsider/19.0 (admin@alphainsider.io)",
     "Accept-Encoding": "gzip, deflate",
     "Host": "data.sec.gov"
 }
@@ -33,42 +33,36 @@ SECTOR_PEERS = {
     "XOM":  ["CVX", "SHEL", "BP", "TTE", "COP", "EOG", "OXY", "SLB"]
 }
 
-# --- LEGISLATIVE ENGINE (RESTORED ALL TOP PICKS) ---
+# --- LEGISLATIVE ENGINE ---
 def get_legislative_intel(ticker: str):
     t = ticker.upper()
-    
-    # --- 1. TOP BUYS (BLUE CHIPS) ---
+    # 1. TOP BUYS (BLUE CHIPS)
     if t == "LMT": return {"bill_id": "H.R. 8070", "bill_name": "Defense Auth Act", "bill_sponsor": "Rep. Rogers (R-AL)", "impact_score": 95, "market_impact": "Direct Beneficiary: Military procurement increase."}
     if t == "NVDA": return {"bill_id": "S. 2714", "bill_name": "AI Safety Act", "bill_sponsor": "Sen. Schumer (D-NY)", "impact_score": 88, "market_impact": "Bullish: AI Infrastructure standards."}
     if t == "AA": return {"bill_id": "H.R. 3668", "bill_name": "Pipeline Review", "bill_sponsor": "Rep. Graves (R-LA)", "impact_score": 78, "market_impact": "Bullish: Lower industrial energy costs."}
     if t == "CALM": return {"bill_id": "H.R. 4368", "bill_name": "Ag Appropriations", "bill_sponsor": "Rep. Harris (R-MD)", "impact_score": 75, "market_impact": "Bullish: Domestic food subsidies."}
-
-    # --- 2. TOP BUYS (UNDER $50) ---
+    # 2. TOP BUYS (UNDER $50)
     if t == "SOFI": return {"bill_id": "H.R. 4763", "bill_name": "Fin. Innovation Act", "bill_sponsor": "Rep. Thompson (R-PA)", "impact_score": 85, "market_impact": "Bullish: Crypto-bank regulatory clarity."}
     if t == "F": return {"bill_id": "H.R. 4468", "bill_name": "Choice in Auto Sales", "bill_sponsor": "Rep. Walberg (R-MI)", "impact_score": 82, "market_impact": "Bullish: Slows EV mandates, helps legacy auto margins."}
-    if t == "GM": return {"bill_id": "H.R. 4468", "bill_name": "Choice in Auto Sales", "bill_sponsor": "Rep. Walberg (R-MI)", "impact_score": 80, "market_impact": "Bullish: Extended profit window for gas trucks."}
     if t == "PFE": return {"bill_id": "H.R. 5525", "bill_name": "Health Approps", "bill_sponsor": "Cmte. Appropriations", "impact_score": 78, "market_impact": "Bullish: Secured recurring vaccine contracts."}
     if t == "AAL": return {"bill_id": "H.R. 1", "bill_name": "Lower Energy Costs", "bill_sponsor": "Rep. Scalise (R-LA)", "impact_score": 84, "market_impact": "Bullish: Cheaper jet fuel improves operating margins."}
     if t == "KMI": return {"bill_id": "H.R. 1", "bill_name": "Lower Energy Costs", "bill_sponsor": "Rep. Scalise (R-LA)", "impact_score": 88, "market_impact": "Bullish: Fast-tracking of natural gas pipelines."}
-
-    # --- 3. SELLS / AVOIDS ---
+    # 3. SELLS
     if t in ["PLTR", "AI"]: return {"bill_id": "S. 2714", "bill_name": "AI Safety Act", "bill_sponsor": "Sen. Schumer (D-NY)", "impact_score": 40, "market_impact": "Bearish: High compliance costs for software gov contracts."}
     if t in ["LCID", "RIVN"]: return {"bill_id": "H.R. 4468", "bill_name": "Choice in Auto Sales", "bill_sponsor": "Rep. Walberg (R-MI)", "impact_score": 30, "market_impact": "Bearish: Removes EV-only incentives."}
     if t == "NFLX": return {"bill_id": "S. 686", "bill_name": "RESTRICT Act", "bill_sponsor": "Sen. Warner (D-VA)", "impact_score": 25, "market_impact": "Bearish: Data privacy restrictions."}
     if t == "AAPL": return {"bill_id": "H.R. 1", "bill_name": "Energy Act", "bill_sponsor": "Rep. Scalise (R-LA)", "impact_score": 40, "market_impact": "Neutral: Low impact on software margins."}
-    if t == "ANGO": return {"bill_id": "H.R. 5525", "bill_name": "Health Approps", "bill_sponsor": "Cmte. Appropriations", "impact_score": 35, "market_impact": "Bearish: Reduced reimbursement rates."}
     if t == "TSLA": return {"bill_id": "H.R. 4468", "bill_name": "Auto Sales Act", "bill_sponsor": "Rep. Walberg (R-MI)", "impact_score": 35, "market_impact": "Bearish: Removal of EV subsidies increases competition."}
-
-    # --- 4. BIOTECH / MED-TECH ---
+    if t == "ANGO": return {"bill_id": "H.R. 5525", "bill_name": "Health Approps", "bill_sponsor": "Cmte. Appropriations", "impact_score": 35, "market_impact": "Bearish: Reduced reimbursement rates."}
+    # 4. MED-TECH
     if t in ["VERO", "PODD", "DXCM"]: return {"bill_id": "H.R. 5525", "bill_name": "Health Approps", "bill_sponsor": "Rep. Aderholt (R-AL)", "impact_score": 60, "market_impact": "Neutral: FDA device funding."}
     if t in ["IBRX", "MRNA"]: return {"bill_id": "H.R. 5525", "bill_name": "Health Approps", "bill_sponsor": "Rep. Aderholt (R-AL)", "impact_score": 65, "market_impact": "Neutral: NIH research grants."}
 
-    # DEFAULT
     return {"bill_id": "H.R. 5525", "bill_name": "Appropriations Act", "bill_sponsor": "Congress", "impact_score": 50, "market_impact": "Neutral: General monitoring."}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v18.0 (All Top Picks Restored).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v19.0 (Fast Lane Optimization).")
     try:
         r = requests.get("https://www.sec.gov/files/company_tickers.json", headers=SEC_HEADERS, timeout=3)
         if r.status_code == 200:
@@ -78,10 +72,10 @@ async def lifespan(app: FastAPI):
     except: pass
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="18.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="19.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- CORE LOGIC ---
+# --- CORE ANALYSIS ---
 def analyze_stock(ticker: str):
     try:
         stock = yf.Ticker(ticker)
@@ -89,19 +83,16 @@ def analyze_stock(ticker: str):
         price = fast.last_price
         price_str = f"${price:.2f}" if price else "$0.00"
         vol_str = "High (Buying)" if (fast.last_volume or 0) > 1000000 else "Neutral"
-        
-        # Financial Health Logic (EPS)
         try:
              eps = stock.info.get('trailingEps', 0)
              fin_str = "Profitable" if eps > 0 else "Unprofitable"
         except: fin_str = "Stable"
-        
     except:
         price_str, vol_str, fin_str = "N/A", "N/A", "N/A"
 
     leg = get_legislative_intel(ticker)
-
-    # Corporate Action (Yahoo -> SEC Fallback)
+    
+    # Corporate Action Check
     action_text = "Monitoring..."
     cutoff_date = datetime.now() - timedelta(days=540)
 
@@ -110,7 +101,6 @@ def analyze_stock(ticker: str):
         if trades is not None and not trades.empty:
             if 'Start Date' in trades.columns:
                 trades = trades.sort_values(by='Start Date', ascending=False)
-            
             latest = trades.iloc[0]
             trade_date = None
             if 'Start Date' in latest: trade_date = latest['Start Date']
@@ -120,19 +110,15 @@ def analyze_stock(ticker: str):
                 date_fmt = pd.to_datetime(trade_date).strftime('%b %d')
                 raw_text = str(latest.get('Text', 'Trade'))
                 who = str(latest.get('Insider', 'Exec')).split(' ')[-1]
-                
-                action = "Trade"
-                if "Sale" in raw_text or "Sold" in raw_text: action = "Sold"
-                elif "Purchase" in raw_text or "Bought" in raw_text: action = "Bought"
-                
+                action = "Sold" if "Sale" in raw_text or "Sold" in raw_text else "Bought"
                 action_text = f"{who} ({action}) {date_fmt}"
         
-        # SEC Direct Fallback
+        # SEC Fallback
         if action_text == "Monitoring...":
             target_cik = CIK_CACHE.get(ticker.upper())
             if target_cik:
                 sub_url = f"https://data.sec.gov/submissions/CIK{target_cik}.json"
-                r = requests.get(sub_url, headers=SEC_HEADERS, timeout=1.5)
+                r = requests.get(sub_url, headers=SEC_HEADERS, timeout=1.0)
                 if r.status_code == 200:
                     filings = r.json().get('filings', {}).get('recent', {})
                     df = pd.DataFrame(filings)
@@ -145,7 +131,6 @@ def analyze_stock(ticker: str):
                                 action_text = f"Form 4 (Trade) {nice_date}"
     except: pass
 
-    # SCORING
     score = leg['impact_score']
     if score >= 75: rating, timing = "STRONG BUY", "Accumulate"
     elif score >= 60: rating, timing = "BUY", "Add Dip"
@@ -170,8 +155,15 @@ def analyze_stock(ticker: str):
     }
 
 @app.get("/api/signals")
-def get_signals(ticker: str = "NVDA"):
+def get_signals(ticker: str = "NVDA", single: bool = False):
     t = ticker.upper()
+    
+    # --- FAST LANE FOR TOP PICKS PAGE ---
+    if single:
+        data = analyze_stock(t)
+        return [data] # Return single item list
+
+    # --- NORMAL MODE FOR HOME PAGE (Sector Scanner) ---
     competitors = SECTOR_PEERS.get(t, ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "AMD"])
     all_tickers = [t] + competitors[:8]
     
@@ -180,13 +172,10 @@ def get_signals(ticker: str = "NVDA"):
         future_to_ticker = {executor.submit(analyze_stock, sym): sym for sym in all_tickers}
         for future in concurrent.futures.as_completed(future_to_ticker):
             try:
-                data = future.result()
-                results.append(data)
+                results.append(future.result())
             except: pass
     
-    # Sort: Primary ticker first, then by Score descending
     results.sort(key=lambda x: (x['ticker'] == t, x['legislation_score']), reverse=True)
-    
     return results
 
 if __name__ == "__main__":
