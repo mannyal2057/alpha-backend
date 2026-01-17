@@ -10,86 +10,125 @@ import requests
 import pandas as pd
 import yfinance as yf
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION & SECRETS ---
+# 1. CONGRESS API (The "Bridge" to your Render Env Var)
+# It looks for a variable named "CONGRESS_API_KEY". If not found, it uses "DEMO_KEY".
+CONGRESS_KEY = os.getenv("CONGRESS_API_KEY", "DEMO_KEY") 
+
+# 2. SEC IDENTITY
 SEC_HEADERS = {
-    "User-Agent": "AlphaInsider/22.0 (admin@alphainsider.io)",
+    "User-Agent": "AlphaInsider/25.0 (admin@alphainsider.io)",
     "Accept-Encoding": "gzip, deflate",
     "Host": "data.sec.gov"
 }
+
+# --- CACHE ---
 CIK_CACHE = {} 
+SERVER_CACHE = {"buys": [], "cheap": [], "sells": [], "last_updated": None}
+ACTIVE_BILLS_CACHE = []
 
-# --- SERVER CACHE (For the Top Picks Page) ---
-SERVER_CACHE = {
-    "buys": [],
-    "cheap": [],
-    "sells": [],
-    "last_updated": None
+# --- SECTOR MAPPING ---
+SECTOR_MAP = {
+    "AI": ["NVDA", "AMD", "MSFT", "GOOGL", "PLTR"],
+    "CRYPTO": ["COIN", "HOOD", "SQ", "MARA"],
+    "DEFENSE": ["LMT", "RTX", "BA", "GD"],
+    "ENERGY": ["XOM", "CVX", "KMI", "OXY"],
+    "HEALTH": ["PFE", "LLY", "MRK", "UNH", "VERO"],
+    "EV": ["TSLA", "RIVN", "LCID", "F", "GM"]
 }
 
-# --- SECTOR PEERS (For the Search Bar) ---
-SECTOR_PEERS = {
-    "NVDA": ["AMD", "INTC", "AVGO", "QCOM", "TSM"],
-    "AMD":  ["NVDA", "INTC", "AVGO", "QCOM", "TSM"],
-    "F":    ["GM", "TM", "HMC", "TSLA", "RIVN"],
-    "TSLA": ["RIVN", "LCID", "F", "GM", "TM"],
-    "VERO": ["PODD", "DXCM", "MDT", "EW", "BSX"], # Medical Devices
-    "PODD": ["VERO", "DXCM", "MDT", "EW", "BSX"],
-    "SOFI": ["LC", "UPST", "COIN", "HOOD", "PYPL"],
-    "COIN": ["HOOD", "MARA", "RIOT", "MSTR", "SQ"],
-    "PFE":  ["MRK", "BMY", "LLY", "JNJ", "ABBV"],
-    "IBRX": ["MRNA", "NVAX", "BNTX", "GILD", "REGN"],
-    "AAL":  ["DAL", "UAL", "LUV", "SAVE", "JBLU"],
-    "AAPL": ["MSFT", "GOOGL", "AMZN", "META", "NFLX"],
-    "XOM":  ["CVX", "SHEL", "BP", "TTE", "COP"]
-}
-
-# --- SCANNER UNIVERSE (For the Background Robot) ---
+# --- UNIVERSE ---
 MARKET_UNIVERSE = [
-    "NVDA", "AMD", "MSFT", "GOOGL", "AAPL", "META", "TSLA", "PLTR", "AI", "SMCI",
-    "SOFI", "COIN", "HOOD", "PYPL", "SQ", "JPM", "BAC", "V", "MA",
-    "LMT", "RTX", "BA", "GE", "CAT", "DE",
-    "XOM", "CVX", "AA", "KMI", "OXY", "COP",
-    "AMZN", "WMT", "COST", "TGT", "F", "GM", "RIVN", "LCID",
-    "PFE", "LLY", "MRK", "UNH", "IBRX", "MRNA", "VERO", "DXCM", "PODD", "MDT"
+    "NVDA", "AMD", "MSFT", "GOOGL", "AAPL", "META", "TSLA", "PLTR", "AI",
+    "SOFI", "COIN", "HOOD", "PYPL", "SQ", "JPM", "BAC",
+    "LMT", "RTX", "BA", "GE", "XOM", "CVX", "AA", "KMI",
+    "AMZN", "WMT", "COST", "F", "GM", "RIVN", "LCID",
+    "PFE", "LLY", "MRK", "IBRX", "MRNA", "VERO", "DXCM"
 ]
 
-# --- LEGISLATIVE ENGINE ---
-def get_legislative_intel(ticker: str):
-    t = ticker.upper()
-    if t in ["LMT", "RTX"]: return {"bill_id": "H.R. 8070", "impact_score": 95, "market_impact": "Direct Beneficiary: Defense spending increase."}
-    if t in ["NVDA", "AMD", "MSFT"]: return {"bill_id": "S. 2714", "impact_score": 88, "market_impact": "Bullish: AI Infrastructure standards."}
-    if t in ["KMI", "AA", "XOM"]: return {"bill_id": "H.R. 1", "impact_score": 85, "market_impact": "Bullish: Energy infrastructure permits."}
-    if t in ["SOFI", "COIN"]: return {"bill_id": "H.R. 4763", "impact_score": 85, "market_impact": "Bullish: Crypto/Fintech regulatory clarity."}
-    if t in ["F", "GM"]: return {"bill_id": "H.R. 4468", "impact_score": 82, "market_impact": "Bullish: Slowing EV mandates helps margins."}
-    if t in ["VERO", "PODD", "DXCM", "IBRX", "MRNA"]: return {"bill_id": "H.R. 5525", "impact_score": 65, "market_impact": "Neutral/Bullish: Healthcare funding renewal."}
-    
-    if t in ["PLTR", "AI"]: return {"bill_id": "S. 2714", "impact_score": 40, "market_impact": "Bearish: Compliance costs for AI software."}
-    if t in ["LCID", "RIVN"]: return {"bill_id": "H.R. 4468", "impact_score": 30, "market_impact": "Bearish: Removal of EV-only subsidies."}
-    
-    return {"bill_id": "H.R. 5525", "impact_score": 50, "market_impact": "Neutral: General market monitoring."}
+# --- LEGISLATIVE ENGINE (REAL) ---
+def fetch_real_legislation():
+    # Uses the Key from your Environment
+    url = f"https://api.congress.gov/v3/bill?api_key={CONGRESS_KEY}&limit=25&sort=updateDate+desc"
+    try:
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            bills = r.json().get('bills', [])
+            cleaned_bills = []
+            
+            for b in bills:
+                title = str(b.get('title', 'Unknown')).upper()
+                bill_id = f"{b.get('type', 'HR').upper()} {b.get('number', '000')}"
+                
+                # Default Impact
+                impact = "Neutral: Monitoring progress."
+                score = 50
+                sector = None
 
-# --- CORE ANALYSIS ---
+                # Keyword Scanning
+                if "INTELLIGENCE" in title or "TECHNOLOGY" in title:
+                    impact = "Bullish: Tech sector investment."
+                    score = 85
+                    sector = "AI"
+                elif "DEFENSE" in title or "ARMED FORCES" in title:
+                    impact = "Direct Beneficiary: Military spending."
+                    score = 92
+                    sector = "DEFENSE"
+                elif "ENERGY" in title or "PIPELINE" in title:
+                    impact = "Bullish: Infrastructure development."
+                    score = 80
+                    sector = "ENERGY"
+                elif "HEALTH" in title or "MEDICAL" in title:
+                    impact = "Neutral/Bullish: Public health funding."
+                    score = 65
+                    sector = "HEALTH"
+                elif "CRYPTO" in title or "DIGITAL" in title:
+                    impact = "Bullish: Regulatory framework."
+                    score = 88
+                    sector = "CRYPTO"
+
+                cleaned_bills.append({
+                    "bill_id": bill_id,
+                    "bill_name": title[:60] + "...",
+                    "impact_score": score,
+                    "market_impact": impact,
+                    "sector": sector
+                })
+            return cleaned_bills
+        else:
+            print(f"⚠️ Congress API Failed: {r.status_code}")
+    except Exception as e:
+        print(f"❌ Congress Connection Error: {e}")
+    return []
+
+def get_legislative_intel(ticker: str):
+    # Match Stock -> Real Bill
+    for bill in ACTIVE_BILLS_CACHE:
+        sector = bill['sector']
+        if sector and sector in SECTOR_MAP:
+            if ticker in SECTOR_MAP[sector]:
+                return bill # Found a match!
+    
+    return {"bill_id": "N/A", "impact_score": 50, "market_impact": "No active legislation found."}
+
+# --- STOCK ANALYSIS ---
 def analyze_stock(ticker: str):
     try:
         stock = yf.Ticker(ticker)
         fast = stock.fast_info
-        price = fast.last_price
-        price_str = f"${price:.2f}" if price else "$0.00"
-        vol = fast.last_volume
-        vol_str = "High (Buying)" if (vol and vol > 1000000) else "Neutral"
-        try: eps = stock.info.get('trailingEps', 0)
-        except: eps = 0
-        fin_str = "Profitable" if eps > 0 else "Unprofitable"
+        price = fast.last_price or 0.0
+        price_str = f"${price:.2f}"
+        vol_str = "High (Buying)" if (fast.last_volume or 0) > 1000000 else "Neutral"
+        fin_str = "Stable"
     except:
         price = 0.0
         price_str, vol_str, fin_str = "N/A", "N/A", "N/A"
 
     leg = get_legislative_intel(ticker)
     
-    # Corporate Action (With Date Filter)
+    # Insider Trades
     action_text = "Monitoring..."
     cutoff_date = datetime.now() - timedelta(days=540)
-    
     try:
         trades = stock.insider_transactions
         if trades is not None and not trades.empty:
@@ -105,7 +144,7 @@ def analyze_stock(ticker: str):
                 action_text = f"{who} ({act}) {date_str}"
     except: pass
 
-    score = leg['impact_score']
+    score = leg.get('impact_score', 50)
     if "High" in vol_str: score += 5
     
     if score >= 75: rating, timing = "STRONG BUY", "Accumulate"
@@ -115,7 +154,7 @@ def analyze_stock(ticker: str):
 
     return {
         "ticker": ticker,
-        "raw_price": price or 0,
+        "raw_price": price,
         "price": price_str,
         "volume_signal": vol_str,
         "financial_health": fin_str,
@@ -126,14 +165,23 @@ def analyze_stock(ticker: str):
         "corporate_activity": action_text,
         "congress_activity": "No Recent Activity",
         "bill_id": leg.get('bill_id', 'N/A'),
-        "bill_name": "Appropriations",
+        "bill_name": leg.get('bill_name', 'Appropriations'),
         "market_impact": leg.get('market_impact', 'N/A')
     }
 
-# --- BACKGROUND WORKER (Updates Top Picks) ---
+# --- BACKGROUND WORKER ---
 async def update_market_scanner():
+    global ACTIVE_BILLS_CACHE
     while True:
-        print("🔄 [BACKGROUND] Scanning Market Universe...")
+        print("🔄 [BACKGROUND] Refreshing Intelligence...")
+        
+        # 1. Get Real Bills
+        bills = fetch_real_legislation()
+        if bills: 
+            ACTIVE_BILLS_CACHE = bills
+            print(f"📜 Loaded {len(bills)} Active Bills.")
+        
+        # 2. Analyze Stocks
         results = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_ticker = {executor.submit(analyze_stock, sym): sym for sym in MARKET_UNIVERSE}
@@ -141,11 +189,11 @@ async def update_market_scanner():
                 try: results.append(future.result())
                 except: pass
         
-        # Update Cache
+        # 3. Sort & Cache
         results.sort(key=lambda x: x['legislation_score'], reverse=True)
         SERVER_CACHE["buys"] = results[:5]
         
-        cheap = [x for x in results if x['raw_price'] < 50 and x['raw_price'] > 0]
+        cheap = [x for x in results if 0 < x['raw_price'] < 50]
         cheap.sort(key=lambda x: x['legislation_score'], reverse=True)
         SERVER_CACHE["cheap"] = cheap[:5]
         
@@ -153,22 +201,34 @@ async def update_market_scanner():
         SERVER_CACHE["sells"] = results[:5]
         
         SERVER_CACHE["last_updated"] = datetime.now().strftime("%H:%M:%S")
-        print(f"✅ [BACKGROUND] Cache Updated at {SERVER_CACHE['last_updated']}")
-        await asyncio.sleep(600)
+        print(f"✅ [BACKGROUND] Cycle Complete at {SERVER_CACHE['last_updated']}")
+        
+        await asyncio.sleep(900) # Sleep 15 mins
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v22.0 (Hybrid Search + Scanner).")
+    # --- STARTUP CHECK ---
+    print(f"💎 SYSTEM BOOT: AlphaInsider v25.0 (Environment Connected).")
+    
+    # Check if Key is Loaded
+    if CONGRESS_KEY == "DEMO_KEY" or not CONGRESS_KEY:
+        print("⚠️ WARNING: No Congress API Key found. Using 'DEMO_KEY' (Limited Data).")
+        print("👉 Did you add 'CONGRESS_API_KEY' to Render Environment Variables?")
+    else:
+        print(f"🔐 Congress API Key: DETECTED (Starts with {CONGRESS_KEY[:4]}...)")
+
+    # Load SEC CIKs
     try:
-        r = requests.get("https://www.sec.gov/files/company_tickers.json", headers=SEC_HEADERS, timeout=3)
+        r = requests.get("https://www.sec.gov/files/company_tickers.json", headers=SEC_HEADERS, timeout=5)
         if r.status_code == 200:
             data = r.json()
             for key in data: CIK_CACHE[data[key]['ticker']] = str(data[key]['cik_str']).zfill(10)
     except: pass
+    
     asyncio.create_task(update_market_scanner())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="22.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="25.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/api/scanner")
@@ -177,28 +237,8 @@ def get_scanner_data(mode: str = "buys"):
 
 @app.get("/api/signals")
 def get_signals(ticker: str = "NVDA", single: bool = False):
-    t = ticker.upper()
-    
-    # Mode 1: Instant Single Check (Used by Top Picks if needed)
-    if single: return [analyze_stock(t)]
-
-    # Mode 2: Search with Peers (Used by Search Bar)
-    # Find Competitors
-    competitors = SECTOR_PEERS.get(t, ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA"])
-    # Create list: Main + 5 Competitors
-    all_tickers = [t] + competitors[:5]
-    
-    # Run Live Parallel Scan
-    results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-        future_to_ticker = {executor.submit(analyze_stock, sym): sym for sym in all_tickers}
-        for future in concurrent.futures.as_completed(future_to_ticker):
-            try: results.append(future.result())
-            except: pass
-    
-    # Sort: Main Ticker first
-    results.sort(key=lambda x: (x['ticker'] == t), reverse=True)
-    return results
+    if single: return [analyze_stock(ticker.upper())]
+    return [analyze_stock(ticker.upper())]
 
 if __name__ == "__main__":
     import uvicorn
