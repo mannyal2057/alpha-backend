@@ -14,7 +14,7 @@ import yfinance as yf
 CONGRESS_KEY = os.getenv("CONGRESS_API_KEY", "DEMO_KEY") 
 
 SEC_HEADERS = {
-    "User-Agent": "AlphaInsider/27.0 (admin@alphainsider.io)",
+    "User-Agent": "AlphaInsider/28.0 (admin@alphainsider.io)",
     "Accept-Encoding": "gzip, deflate",
     "Host": "data.sec.gov"
 }
@@ -35,6 +35,7 @@ SECTOR_PEERS = {
     "SOFI": ["LC", "UPST", "COIN", "HOOD", "PYPL"],
     "COIN": ["HOOD", "MARA", "RIOT", "MSTR", "SQ"],
     "SQ":   ["PYPL", "COIN", "HOOD", "AFRM", "V"],
+    "BA":   ["LMT", "RTX", "GD", "GE", "AIR"], # Added Boeing Peers
     "PFE":  ["MRK", "BMY", "LLY", "JNJ", "ABBV"],
     "IBRX": ["MRNA", "NVAX", "BNTX", "GILD", "REGN"],
     "AAL":  ["DAL", "UAL", "LUV", "SAVE", "JBLU"],
@@ -46,7 +47,7 @@ SECTOR_PEERS = {
 SECTOR_MAP = {
     "AI": ["NVDA", "AMD", "MSFT", "GOOGL", "PLTR", "AI", "SMCI"],
     "CRYPTO": ["COIN", "HOOD", "SQ", "MARA", "RIOT"],
-    "DEFENSE": ["LMT", "RTX", "BA", "GD", "GE"],
+    "DEFENSE": ["LMT", "RTX", "BA", "GD", "GE", "NOC"],
     "ENERGY": ["XOM", "CVX", "KMI", "OXY", "AA"],
     "HEALTH": ["PFE", "LLY", "MRK", "UNH", "VERO", "IBRX", "DXCM"],
     "EV": ["TSLA", "RIVN", "LCID", "F", "GM"],
@@ -76,12 +77,10 @@ def fetch_real_legislation():
                 title = str(b.get('title', 'Unknown')).upper()
                 bill_id = f"{b.get('type', 'HR').upper()} {b.get('number', '000')}"
                 
-                # Default values
                 impact = "Neutral: Monitoring."
                 score = 50
                 sector = None
 
-                # Keyword Matching
                 if "INTELLIGENCE" in title or "TECHNOLOGY" in title or "CHIPS" in title:
                     impact = "Bullish: Tech investment bill."
                     score = 85
@@ -98,54 +97,42 @@ def fetch_real_legislation():
                     impact = "Neutral/Bullish: Public health funding."
                     score = 65
                     sector = "HEALTH"
-                elif "CRYPTO" in title or "DIGITAL ASSET" in title or "BLOCKCHAIN" in title:
+                elif "CRYPTO" in title or "DIGITAL ASSET" in title:
                     impact = "Bullish: Regulatory framework."
                     score = 88
                     sector = "CRYPTO"
-                elif "BANK" in title or "FINANCE" in title or "MONEY" in title:
+                elif "BANK" in title or "FINANCE" in title:
                     impact = "Neutral: Financial regulation."
                     score = 55
                     sector = "FINANCE"
 
-                # Extract Sponsor (First one in list if available)
-                # The API structure varies, usually it's not directly in the list view
-                # We will use a fallback or generic name if missing
-                sponsor = "Congress" 
-
-                if sector: # Only add relevant bills
+                if sector:
                     cleaned_bills.append({
                         "bill_id": bill_id,
                         "bill_name": title[:60] + "...",
-                        "bill_sponsor": sponsor,
+                        "bill_sponsor": "Congress", 
                         "impact_score": score,
                         "market_impact": impact,
                         "sector": sector
                     })
     except: pass
 
-    # --- FALLBACK: Always ensure at least one bill exists ---
+    # Fallbacks
     if not cleaned_bills:
         cleaned_bills.append({
-            "bill_id": "H.R. 2882",
-            "bill_name": "Further Consolidated Appropriations Act",
-            "bill_sponsor": "Rep. Granger",
-            "impact_score": 60,
-            "market_impact": "Neutral: General government funding.",
-            "sector": "FINANCE" # Links to JPM, BAC, etc.
+            "bill_id": "H.R. 2882", "bill_name": "Appropriations Act",
+            "bill_sponsor": "Rep. Granger", "impact_score": 60,
+            "market_impact": "Neutral: Gov funding.", "sector": "FINANCE"
         })
         cleaned_bills.append({
-             "bill_id": "S. 4638",
-             "bill_name": "National Defense Authorization Act",
-             "bill_sponsor": "Sen. Reed",
-             "impact_score": 90,
-             "market_impact": "Bullish: Defense contractors.",
-             "sector": "DEFENSE"
+             "bill_id": "S. 4638", "bill_name": "National Defense Act",
+             "bill_sponsor": "Sen. Reed", "impact_score": 92,
+             "market_impact": "Bullish: Defense contractors.", "sector": "DEFENSE"
         })
 
     return cleaned_bills
 
 def get_legislative_intel(ticker: str):
-    # Match Stock -> Active Bill
     for bill in ACTIVE_BILLS_CACHE:
         sector = bill['sector']
         if sector and sector in SECTOR_MAP:
@@ -180,7 +167,7 @@ def analyze_stock(ticker: str):
 
     leg = get_legislative_intel(ticker)
     
-    # Insider Trades
+    # Insider Trades (NAME FIX APPLIED HERE)
     action_text = "Monitoring..."
     cutoff_date = datetime.now() - timedelta(days=540)
     try:
@@ -191,7 +178,16 @@ def analyze_stock(ticker: str):
             trade_date = latest.get('Start Date') or latest.name
             
             if trade_date and pd.to_datetime(trade_date) > cutoff_date:
-                who = str(latest.get('Insider', 'Exec')).split(' ')[-1]
+                # --- BETTER NAME PARSING ---
+                full_name = str(latest.get('Insider', 'Exec')).strip()
+                name_parts = full_name.split(' ')
+                
+                # Default to first name
+                who = name_parts[0] 
+                # If we have a last name and it's longer than 1 letter (avoid "S."), use it
+                if len(name_parts) > 1 and len(name_parts[-1]) > 1:
+                    who = name_parts[-1]
+                
                 raw = str(latest.get('Text', '')).lower()
                 act = "Sold" if "sale" in raw or "sold" in raw else "Bought"
                 date_str = pd.to_datetime(trade_date).strftime('%b %d')
@@ -218,11 +214,9 @@ def analyze_stock(ticker: str):
         "final_score": rating,
         "corporate_activity": action_text,
         "congress_activity": "No Recent Activity",
-        
-        # FIELDS RESTORED FOR LEGISLATION PAGE:
         "bill_id": leg.get('bill_id', 'N/A'),
         "bill_name": leg.get('bill_name', 'Appropriations'),
-        "bill_sponsor": leg.get('bill_sponsor', 'Congress'), # <--- FIXED
+        "bill_sponsor": leg.get('bill_sponsor', 'Congress'),
         "market_impact": leg.get('market_impact', 'N/A')
     }
 
@@ -232,12 +226,9 @@ async def update_market_scanner():
     while True:
         print("🔄 [BACKGROUND] Refreshing Intelligence...")
         
-        # 1. Bills
         bills = fetch_real_legislation()
         if bills: ACTIVE_BILLS_CACHE = bills
-        print(f"📜 Active Bills: {len(ACTIVE_BILLS_CACHE)}")
         
-        # 2. Stocks
         results = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_ticker = {executor.submit(analyze_stock, sym): sym for sym in MARKET_UNIVERSE}
@@ -262,18 +253,17 @@ async def update_market_scanner():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v27.0 (Sponsor Field Restored).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v28.0 (Formatting Fixes).")
     try:
         r = requests.get("https://www.sec.gov/files/company_tickers.json", headers=SEC_HEADERS, timeout=5)
         if r.status_code == 200:
             data = r.json()
             for key in data: CIK_CACHE[data[key]['ticker']] = str(data[key]['cik_str']).zfill(10)
     except: pass
-    
     asyncio.create_task(update_market_scanner())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="27.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="28.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/api/scanner")
