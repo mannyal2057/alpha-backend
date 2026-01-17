@@ -14,7 +14,7 @@ import yfinance as yf
 CONGRESS_KEY = os.getenv("CONGRESS_API_KEY", "DEMO_KEY") 
 
 SEC_HEADERS = {
-    "User-Agent": "AlphaInsider/29.0 (admin@alphainsider.io)",
+    "User-Agent": "AlphaInsider/28.0 (admin@alphainsider.io)",
     "Accept-Encoding": "gzip, deflate",
     "Host": "data.sec.gov"
 }
@@ -35,7 +35,7 @@ SECTOR_PEERS = {
     "SOFI": ["LC", "UPST", "COIN", "HOOD", "PYPL"],
     "COIN": ["HOOD", "MARA", "RIOT", "MSTR", "SQ"],
     "SQ":   ["PYPL", "COIN", "HOOD", "AFRM", "V"],
-    "BA":   ["LMT", "RTX", "GD", "GE", "AIR"],
+    "BA":   ["LMT", "RTX", "GD", "GE", "AIR"], # Added Boeing Peers
     "PFE":  ["MRK", "BMY", "LLY", "JNJ", "ABBV"],
     "IBRX": ["MRNA", "NVAX", "BNTX", "GILD", "REGN"],
     "AAL":  ["DAL", "UAL", "LUV", "SAVE", "JBLU"],
@@ -52,20 +52,6 @@ SECTOR_MAP = {
     "HEALTH": ["PFE", "LLY", "MRK", "UNH", "VERO", "IBRX", "DXCM"],
     "EV": ["TSLA", "RIVN", "LCID", "F", "GM"],
     "FINANCE": ["JPM", "BAC", "V", "MA", "SOFI", "PYPL"]
-}
-
-# --- REAL CONGRESS TRADING DATA (The "Pelosi Tracker") ---
-# In a real app, you would scrape this daily. For now, we use a curated active list.
-CONGRESS_TRADES_DB = {
-    "NVDA": {"pol": "Rep. Pelosi", "type": "Purchase", "date": "2024-11-22", "amount": "$5M+"},
-    "MSFT": {"pol": "Rep. Khanna", "type": "Purchase", "date": "2024-12-15", "amount": "$500k"},
-    "LMT":  {"pol": "Rep. Rutherford", "type": "Purchase", "date": "2024-12-05", "amount": "$50k"},
-    "RTX":  {"pol": "Sen. Tuberville", "type": "Purchase", "date": "2024-11-28", "amount": "$100k"},
-    "PLTR": {"pol": "Rep. Green", "type": "Purchase", "date": "2025-01-10", "amount": "$250k"},
-    "COIN": {"pol": "Rep. Fallon", "type": "Purchase", "date": "2025-01-05", "amount": "$100k"},
-    "XOM":  {"pol": "Rep. Pfluger", "type": "Purchase", "date": "2024-12-20", "amount": "$50k"},
-    "SOFI": {"pol": "Sen. Lummis", "type": "Purchase", "date": "2024-10-15", "amount": "$15k"},
-    "TSLA": {"pol": "Rep. Malinowski", "type": "Sale", "date": "2024-12-01", "amount": "$50k"} # Sell Example
 }
 
 # --- UNIVERSE ---
@@ -86,6 +72,7 @@ def fetch_real_legislation():
         r = requests.get(url, timeout=5)
         if r.status_code == 200:
             bills = r.json().get('bills', [])
+            
             for b in bills:
                 title = str(b.get('title', 'Unknown')).upper()
                 bill_id = f"{b.get('type', 'HR').upper()} {b.get('number', '000')}"
@@ -110,7 +97,7 @@ def fetch_real_legislation():
                     impact = "Neutral/Bullish: Public health funding."
                     score = 65
                     sector = "HEALTH"
-                elif "CRYPTO" in title or "DIGITAL ASSET" in title or "BLOCKCHAIN" in title:
+                elif "CRYPTO" in title or "DIGITAL ASSET" in title:
                     impact = "Bullish: Regulatory framework."
                     score = 88
                     sector = "CRYPTO"
@@ -130,6 +117,7 @@ def fetch_real_legislation():
                     })
     except: pass
 
+    # Fallbacks
     if not cleaned_bills:
         cleaned_bills.append({
             "bill_id": "H.R. 2882", "bill_name": "Appropriations Act",
@@ -141,6 +129,7 @@ def fetch_real_legislation():
              "bill_sponsor": "Sen. Reed", "impact_score": 92,
              "market_impact": "Bullish: Defense contractors.", "sector": "DEFENSE"
         })
+
     return cleaned_bills
 
 def get_legislative_intel(ticker: str):
@@ -162,6 +151,7 @@ def analyze_stock(ticker: str):
         except:
             price = 0.0
             vol = 0
+            
         price_str = f"${price:.2f}"
         vol_str = "High (Buying)" if vol > 1000000 else "Neutral"
         fin_str = "Stable"
@@ -175,30 +165,9 @@ def analyze_stock(ticker: str):
             "market_impact": "N/A", "bill_sponsor": "N/A"
         }
 
-    # 1. Base Legislative Score
     leg = get_legislative_intel(ticker)
-    score = leg.get('impact_score', 50)
     
-    # 2. Volume Bonus
-    if "High" in vol_str: score += 5
-
-    # 3. CONGRESSIONAL TRADING BONUS (+25%)
-    # This is the new "Secret Sauce"
-    congress_note = "No Recent Activity"
-    trade_data = CONGRESS_TRADES_DB.get(ticker)
-    
-    if trade_data:
-        pol = trade_data['pol']
-        action = trade_data['type']
-        
-        if action == "Purchase":
-            score += 25  # THE BONUS
-            congress_note = f"{pol} Bought (+25% Boost)"
-        elif action == "Sale":
-            score -= 25  # THE PENALTY
-            congress_note = f"{pol} Sold (-25% Hit)"
-            
-    # 4. Insider Trades (Corporate)
+    # Insider Trades (NAME FIX APPLIED HERE)
     action_text = "Monitoring..."
     cutoff_date = datetime.now() - timedelta(days=540)
     try:
@@ -209,10 +178,15 @@ def analyze_stock(ticker: str):
             trade_date = latest.get('Start Date') or latest.name
             
             if trade_date and pd.to_datetime(trade_date) > cutoff_date:
+                # --- BETTER NAME PARSING ---
                 full_name = str(latest.get('Insider', 'Exec')).strip()
                 name_parts = full_name.split(' ')
+                
+                # Default to first name
                 who = name_parts[0] 
-                if len(name_parts) > 1 and len(name_parts[-1]) > 1: who = name_parts[-1]
+                # If we have a last name and it's longer than 1 letter (avoid "S."), use it
+                if len(name_parts) > 1 and len(name_parts[-1]) > 1:
+                    who = name_parts[-1]
                 
                 raw = str(latest.get('Text', '')).lower()
                 act = "Sold" if "sale" in raw or "sold" in raw else "Bought"
@@ -220,9 +194,8 @@ def analyze_stock(ticker: str):
                 action_text = f"{who} ({act}) {date_str}"
     except: pass
 
-    # Rating Logic
-    # Cap score at 100 to keep UI clean, or let it go to 110 for "Overdrive"
-    if score > 100: score = 99 
+    score = leg.get('impact_score', 50)
+    if "High" in vol_str: score += 5
     
     if score >= 75: rating, timing = "STRONG BUY", "Accumulate"
     elif score >= 60: rating, timing = "BUY", "Add Dip"
@@ -240,7 +213,7 @@ def analyze_stock(ticker: str):
         "sentiment": "Bullish" if "BUY" in rating else "Bearish",
         "final_score": rating,
         "corporate_activity": action_text,
-        "congress_activity": congress_note, # NEW FIELD
+        "congress_activity": "No Recent Activity",
         "bill_id": leg.get('bill_id', 'N/A'),
         "bill_name": leg.get('bill_name', 'Appropriations'),
         "bill_sponsor": leg.get('bill_sponsor', 'Congress'),
@@ -252,6 +225,7 @@ async def update_market_scanner():
     global ACTIVE_BILLS_CACHE
     while True:
         print("🔄 [BACKGROUND] Refreshing Intelligence...")
+        
         bills = fetch_real_legislation()
         if bills: ACTIVE_BILLS_CACHE = bills
         
@@ -274,11 +248,12 @@ async def update_market_scanner():
         
         SERVER_CACHE["last_updated"] = datetime.now().strftime("%H:%M:%S")
         print(f"✅ [BACKGROUND] Cycle Complete at {SERVER_CACHE['last_updated']}")
+        
         await asyncio.sleep(900)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v29.0 (+25% Congress Bonus).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v28.0 (Formatting Fixes).")
     try:
         r = requests.get("https://www.sec.gov/files/company_tickers.json", headers=SEC_HEADERS, timeout=5)
         if r.status_code == 200:
@@ -288,7 +263,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(update_market_scanner())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="29.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="28.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/api/scanner")
