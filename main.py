@@ -67,7 +67,7 @@ SECTOR_MAP = {
     "FINANCE": ["JPM", "BAC", "V", "MA", "SOFI", "C", "WFC", "GS"] 
 }
 
-MARKET_UNIVERSE = ["NVDA", "AMD", "MSFT", "GOOGL", "AAPL", "META", "TSLA", "PLTR", "AI", "SOFI", "COIN", "HOOD", "JPM", "BAC", "LMT", "RTX", "BA", "XOM", "CVX", "KMI", "AMZN", "WMT", "COST", "F", "GM", "RIVN", "PFE", "LLY", "MRK", "VERO"]
+MARKET_UNIVERSE = ["NVDA", "AMD", "MSFT", "GOOGL", "AAPL", "META", "TSLA", "PLTR", "AI", "SOFI", "COIN", "HOOD", "JPM", "BAC", "LMT", "RTX", "BA", "XOM", "CVX", "KMI", "AMZN", "WMT", "COST", "F", "GM", "RIVN", "LCID", "PFE", "LLY", "MRK", "VERO"]
 
 class PriceRequest(BaseModel): tickers: list[str]
 
@@ -142,7 +142,7 @@ def analyze_stock(ticker: str):
         else: rating = "HOLD"
 
         return { 
-            "ticker": ticker, "price": f"${price:.2f}",
+            "ticker": ticker, "raw_price": price, "price": f"${price:.2f}",
             "final_score": rating, "sentiment": "Bullish" if rating != "HOLD" else "Neutral",
             "risk_level": risk_level, "expected_move": exp_move,
             "volatility_regime": vol_regime, "congress_activity": congress_note,
@@ -151,7 +151,7 @@ def analyze_stock(ticker: str):
         }
     except Exception as e:
         return { 
-            "ticker": ticker, "price": "N/A", "final_score": "HOLD", "sentiment": "Neutral", 
+            "ticker": ticker, "raw_price": 0, "price": "N/A", "final_score": "HOLD", "sentiment": "Neutral", 
             "risk_level": "Unknown", "expected_move": "N/A", "volatility_regime": "N/A",
             "congress_activity": "N/A", "bill_id": "N/A", "corporate_activity": "Data Unavailable"
         }
@@ -181,12 +181,24 @@ async def update_market_scanner():
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
             futs = {executor.submit(analyze_stock, s): s for s in MARKET_UNIVERSE}
             for f in concurrent.futures.as_completed(futs): results.append(f.result())
+        
+        # --- FIXED SCANNER LOGIC ---
         try:
-            results.sort(key=lambda x: x.get('final_score') == "STRONG BUY", reverse=True)
+            # 1. TOP PICKS: Sort by Score (Highest First)
+            results.sort(key=lambda x: (x.get('final_score') == "STRONG BUY", x.get('final_score') == "BUY"), reverse=True)
             SERVER_CACHE["buys"] = results[:5]
-            SERVER_CACHE["cheap"] = results[:5] 
-            SERVER_CACHE["sells"] = results[-5:]
-        except: pass
+            
+            # 2. CHEAP PICKS: Filter < $50 THEN Sort
+            cheap_stocks = [x for x in results if 0 < x.get('raw_price', 0) < 50]
+            cheap_stocks.sort(key=lambda x: (x.get('final_score') == "STRONG BUY", x.get('final_score') == "BUY"), reverse=True)
+            SERVER_CACHE["cheap"] = cheap_stocks[:5]
+            
+            # 3. SELLS: Sort by Score (Lowest First)
+            results.sort(key=lambda x: (x.get('final_score') == "STRONG BUY"), reverse=False)
+            SERVER_CACHE["sells"] = results[:5]
+            
+        except Exception as e: print(f"Scanner Sort Error: {e}")
+        
         await asyncio.sleep(900)
 
 @asynccontextmanager
