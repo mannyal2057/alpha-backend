@@ -14,7 +14,7 @@ import numpy as np
 
 # --- CONFIGURATION ---
 CONGRESS_KEY = os.getenv("CONGRESS_API_KEY", "DEMO_KEY") 
-# Anti-Block Headers (Masquerade as Chrome)
+# Anti-Block Headers (Masquerade as Chrome to bypass Yahoo 401s)
 SEC_HEADERS = { 
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
@@ -40,11 +40,11 @@ STATIC_TRADES = {
     "LMT":  {"pol": "Rep. Rutherford", "type": "Purchase", "date": TODAY}
 }
 
-# --- SMART PEER DATABASE (Fixes 'AI' Search) ---
+# --- SMART PEER DATABASE ---
 SECTOR_PEERS = {
     "NVDA": ["AMD", "INTC", "AVGO", "TSM"],
     "AMD":  ["NVDA", "INTC", "ARM", "TSM"],
-    "AI":   ["PLTR", "SOFI", "SNOW", "PATH"], # <--- FIXED
+    "AI":   ["PLTR", "SOFI", "SNOW", "PATH"], # <--- FIX: Explicitly map AI (C3.ai)
     "PLTR": ["AI", "SNOW", "DDOG", "MDB"],
     "F":    ["GM", "TM", "TSLA", "RIVN"],
     "TSLA": ["RIVN", "LCID", "F", "GM"],
@@ -60,18 +60,22 @@ SECTOR_PEERS = {
 }
 
 SECTOR_MAP = { 
-    "AI": ["NVDA", "AMD", "MSFT", "GOOGL", "PLTR", "AI", "SMCI"], 
-    "CRYPTO": ["COIN", "HOOD", "SQ", "MARA", "RIOT"], 
-    "DEFENSE": ["LMT", "RTX", "BA", "GD", "GE"], 
-    "ENERGY": ["XOM", "CVX", "KMI", "OXY"], 
-    "HEALTH": ["PFE", "LLY", "MRK", "VERO", "IBRX"], 
-    "EV": ["TSLA", "RIVN", "LCID", "F", "GM"], 
-    "FINANCE": ["JPM", "BAC", "V", "MA", "SOFI"] 
+    "AI": ["NVDA", "AMD", "MSFT", "GOOGL", "PLTR", "AI", "SMCI", "AVGO", "INTC", "ARM"], 
+    "CRYPTO": ["COIN", "HOOD", "SQ", "MARA", "RIOT", "MSTR"], 
+    "DEFENSE": ["LMT", "RTX", "BA", "GD", "GE", "NOC", "LHX"], 
+    "ENERGY": ["XOM", "CVX", "KMI", "OXY", "SLB", "HAL"], 
+    "HEALTH": ["PFE", "LLY", "MRK", "VERO", "IBRX", "JNJ", "UNH"], 
+    "EV": ["TSLA", "RIVN", "LCID", "F", "GM", "TM"], 
+    "FINANCE": ["JPM", "BAC", "V", "MA", "SOFI", "C", "WFC", "GS"] 
 }
 
-# Default Demo Prices (Safety Net)
-DEMO_PRICES = { "NVDA": 185.0, "AI": 13.0, "PLTR": 170.0, "MSFT": 460.0, "AMD": 230.0, "COIN": 310.0 }
-MARKET_UNIVERSE = ["NVDA", "AMD", "MSFT", "GOOGL", "AAPL", "META", "TSLA", "PLTR", "AI", "SOFI", "COIN", "HOOD", "JPM", "BAC", "LMT", "RTX", "BA", "XOM", "CVX", "KMI", "AMZN", "WMT", "COST", "F", "GM", "RIVN", "LCID", "PFE", "LLY", "MRK", "VERO"]
+# Updated Demo Prices (More Realistic)
+DEMO_PRICES = { 
+    "NVDA": 185.0, "AI": 13.0, "PLTR": 170.0, "MSFT": 460.0, "AMD": 230.0, "COIN": 310.0, 
+    "LMT": 580.0, "AVGO": 1050.0, "INTC": 24.0, "SOFI": 14.0, "F": 11.5, "BA": 240.0,
+    "RTX": 100.0, "HOOD": 35.0, "VERO": 8.0, "PFE": 25.0
+}
+MARKET_UNIVERSE = ["NVDA", "AMD", "MSFT", "GOOGL", "AAPL", "META", "TSLA", "PLTR", "AI", "SOFI", "COIN", "HOOD", "JPM", "BAC", "LMT", "RTX", "BA", "XOM", "CVX", "KMI", "AMZN", "WMT", "COST", "F", "GM", "RIVN", "LCID", "PFE", "LLY", "MRK", "VERO", "AVGO", "INTC"]
 
 class PriceRequest(BaseModel): tickers: list[str]
 
@@ -82,11 +86,13 @@ def get_live_data(ticker):
         stock = yf.Ticker(ticker, session=SESSION)
         fast = stock.fast_info
         price = fast.last_price
-        vol = fast.last_volume
-        if not price: raise Exception("No Data")
-        return stock, price, vol, False
+        
+        # Validation: Price must exist and be greater than 0
+        if not price or price <= 0: raise Exception("Invalid Price")
+        
+        return stock, price, fast.last_volume, False
     except:
-        # Fallback to Demo Data
+        # Fallback to Demo Data if Yahoo blocks or fails
         p = DEMO_PRICES.get(ticker, 100.0) * random.uniform(0.99, 1.01)
         return None, p, 5000000, True
 
@@ -126,10 +132,8 @@ def get_options_intel(stock, price, is_sim):
 
 def analyze_stock(ticker: str):
     try:
-        # 1. Get Data
         stock, price, vol, is_sim = get_live_data(ticker)
         
-        # 2. Get Advanced Metrics
         if not is_sim:
             try: hist = stock.history(period="1mo")
             except: hist = None
@@ -138,11 +142,9 @@ def analyze_stock(ticker: str):
         atr, beta, regime = get_volatility_regime(stock, hist, is_sim)
         call_w, put_w, move_pct, iv, skew = get_options_intel(stock, price, is_sim)
         
-        # 3. Targets
         target_up = price * (1 + (move_pct/100))
         target_down = price * (1 - (move_pct/100))
 
-        # 4. Legislation & Congress
         leg_score = 50
         leg = None
         for bill in ACTIVE_BILLS_CACHE:
@@ -154,13 +156,13 @@ def analyze_stock(ticker: str):
             td = STATIC_TRADES[ticker]
             if td['type'] == "Purchase": leg_score += 20; congress_note = f"{td['pol']} Bought (+20)"
 
-        # 5. Risk & Scoring
         if "Bullish" in skew: leg_score += 10
         risk_val = (iv * 100) + (beta * 10)
         risk = "High" if risk_val > 60 else "Medium" if risk_val > 30 else "Low"
         
         if leg_score >= 80 and risk == "Low": rating = "STRONG BUY"
         elif leg_score >= 60: rating = "BUY"
+        elif leg_score <= 40: rating = "SELL" # Explicit Sell Rating
         else: rating = "HOLD"
 
         return { 
@@ -178,14 +180,11 @@ def analyze_stock(ticker: str):
 
 # --- SEARCH ENGINE ---
 def get_peers(ticker):
-    # 1. Direct Match (Prioritized)
     if ticker in SECTOR_PEERS: return SECTOR_PEERS[ticker]
-    # 2. Sector Match
     for sector, stocks in SECTOR_MAP.items():
         if ticker in stocks:
             peers = [s for s in stocks if s != ticker]
             return peers[:4] if len(peers) >= 4 else peers
-    # 3. Fallback
     return ["AAPL", "MSFT", "NVDA", "GOOGL"]
 
 def fetch_real_legislation(): return STATIC_LEGISLATION
@@ -199,28 +198,33 @@ async def update_market_scanner():
             futs = {executor.submit(analyze_stock, s): s for s in MARKET_UNIVERSE}
             for f in concurrent.futures.as_completed(futs): results.append(f.result())
         try:
-            # Sort Top Picks
-            results.sort(key=lambda x: (x.get('final_score') == "STRONG BUY", x.get('final_score') == "BUY"), reverse=True)
-            SERVER_CACHE["buys"] = results[:5]
+            # 1. TOP OPPORTUNITIES (Strictly Buys)
+            buys = [x for x in results if x.get('final_score') in ["STRONG BUY", "BUY"]]
+            buys.sort(key=lambda x: x.get('final_score') == "STRONG BUY", reverse=True)
+            SERVER_CACHE["buys"] = buys[:5]
             
-            # Sort Cheap Picks (STRICT FILTER < $50)
-            cheap_stocks = [x for x in results if 0 < x.get('raw_price', 0) < 50]
-            cheap_stocks.sort(key=lambda x: (x.get('final_score') == "STRONG BUY"), reverse=True)
-            SERVER_CACHE["cheap"] = cheap_stocks[:5]
+            # 2. CHEAP PICKS (Strict Price Filter)
+            # Filter first, THEN sort.
+            cheap = [x for x in results if x.get('raw_price', 999) < 50 and x.get('raw_price', 0) > 0]
+            cheap.sort(key=lambda x: x.get('final_score') == "STRONG BUY", reverse=True)
+            SERVER_CACHE["cheap"] = cheap[:5]
             
-            # Sort Sells
-            results.sort(key=lambda x: (x.get('final_score') == "STRONG BUY"), reverse=False)
-            SERVER_CACHE["sells"] = results[:5]
-        except: pass
+            # 3. HIGH RISK / AVOID (Strictly Sells or High Risk)
+            # We look for "SELL" ratings OR "High" risk
+            sells = [x for x in results if x.get('final_score') == "SELL" or x.get('risk_level') == "High"]
+            sells.sort(key=lambda x: x.get('risk_level') == "High", reverse=True)
+            SERVER_CACHE["sells"] = sells[:5]
+            
+        except Exception as e: print(f"Scanner Logic Error: {e}")
         await asyncio.sleep(900)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v42.0 (Unified Master).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v43.0 (Final Fixes).")
     asyncio.create_task(update_market_scanner())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="42.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="43.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.post("/api/prices")
