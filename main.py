@@ -10,17 +10,17 @@ from pydantic import BaseModel
 import requests
 import pandas as pd
 import yfinance as yf
+import numpy as np
 
 # --- CONFIGURATION ---
 CONGRESS_KEY = os.getenv("CONGRESS_API_KEY", "DEMO_KEY") 
-SEC_HEADERS = { "User-Agent": "AlphaInsider/36.0 (admin@alphainsider.io)", "Accept-Encoding": "gzip, deflate", "Host": "data.sec.gov" }
+SEC_HEADERS = { "User-Agent": "AlphaInsider/37.0 (admin@alphainsider.io)", "Accept-Encoding": "gzip, deflate", "Host": "data.sec.gov" }
 
 # --- CACHE ---
 SERVER_CACHE = {"buys": [], "cheap": [], "sells": [], "last_updated": None}
 ACTIVE_BILLS_CACHE = []
 
-# --- GOLDEN DATA (UPDATED DATES) ---
-# We update these dates to be "Today" so they trigger the "Fresh" bonus
+# --- GOLDEN DATA ---
 TODAY = datetime.now().strftime("%Y-%m-%d")
 LAST_WEEK = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
 
@@ -50,7 +50,6 @@ class PriceRequest(BaseModel): tickers: list[str]
 def fetch_real_legislation():
     cleaned_bills = []
     try:
-        # Fetch latest 25 bills
         url = f"https://api.congress.gov/v3/bill?api_key={CONGRESS_KEY}&limit=25&sort=updateDate+desc"
         r = requests.get(url, timeout=4)
         if r.status_code == 200:
@@ -58,41 +57,61 @@ def fetch_real_legislation():
             for b in bills:
                 title = str(b.get('title', 'Unknown')).upper()
                 bill_id = f"{b.get('type', 'HR').upper()} {b.get('number', '000')}"
-                update_date = b.get('updateDate', '2023-01-01') # Default to old if missing
-                
+                update_date = b.get('updateDate', '2023-01-01')
                 impact, sector = "Neutral: Monitoring.", None
                 if "INTELLIGENCE" in title or "TECHNOLOGY" in title: impact, sector = "Bullish: Tech investment.", "AI"
                 elif "DEFENSE" in title: impact, sector = "Direct Beneficiary: Military.", "DEFENSE"
                 elif "ENERGY" in title: impact, sector = "Bullish: Infrastructure.", "ENERGY"
                 elif "HEALTH" in title: impact, sector = "Neutral: Health funding.", "HEALTH"
                 elif "CRYPTO" in title: impact, sector = "Bullish: Crypto Regs.", "CRYPTO"
-                
-                if sector: 
-                    cleaned_bills.append({ 
-                        "bill_id": bill_id, "bill_name": title[:60]+"...", 
-                        "bill_sponsor": "Congress", "update_date": update_date,
-                        "market_impact": impact, "sector": sector 
-                    })
+                if sector: cleaned_bills.append({ "bill_id": bill_id, "bill_name": title[:60]+"...", "bill_sponsor": "Congress", "update_date": update_date, "market_impact": impact, "sector": sector })
     except: pass
     
-    # Merge Static (Golden Data)
     for sb in STATIC_LEGISLATION:
-        if not any(b['bill_id'] == sb['bill_id'] for b in cleaned_bills):
-            cleaned_bills.append(sb)
-            
+        if not any(b['bill_id'] == sb['bill_id'] for b in cleaned_bills): cleaned_bills.append(sb)
     return cleaned_bills
 
 def get_legislative_intel(ticker: str):
-    # Find matching bill and return it
     for bill in ACTIVE_BILLS_CACHE:
         if ticker in SECTOR_MAP.get(bill['sector'], []): return bill
     return None
 
+# --- NEW: OPTIONS INTEL ---
+def get_options_intel(stock_obj, current_price):
+    """Calculates Implied Move & Volatility Risk"""
+    try:
+        # Get expiration dates
+        exps = stock_obj.options
+        if not exps: return "N/A", "Low", 0.0
+
+        # Get nearest chain
+        chain = stock_obj.option_chain(exps[0])
+        
+        # Find ATM Straddle Cost (Call + Put price at current strike)
+        calls = chain.calls
+        puts = chain.puts
+        
+        # Simple ATM approximation
+        atm_call = calls.iloc[(calls['strike'] - current_price).abs().argsort()[:1]]
+        atm_put = puts.iloc[(puts['strike'] - current_price).abs().argsort()[:1]]
+        
+        straddle_cost = (atm_call['lastPrice'].values[0] + atm_put['lastPrice'].values[0])
+        expected_move_pct = (straddle_cost / current_price) * 100
+        
+        # Risk Classification based on Implied Volatility
+        iv = atm_call['impliedVolatility'].values[0]
+        if iv > 0.8: risk = "High (Extreme Vol)"
+        elif iv > 0.4: risk = "Medium (Active)"
+        else: risk = "Low (Stable)"
+        
+        return f"+/- {expected_move_pct:.1f}%", risk, iv
+    except:
+        return "N/A", "Unknown", 0.0
+
 def analyze_stock(ticker: str):
     try:
-        # 1. Market Data
+        stock = yf.Ticker(ticker)
         try:
-            stock = yf.Ticker(ticker)
             fast = stock.fast_info
             price = fast.last_price or 0.0
             vol = fast.last_volume or 0
@@ -101,48 +120,33 @@ def analyze_stock(ticker: str):
         price_str = f"${price:.2f}" if price > 0 else "N/A"
         vol_str = "High (Buying)" if vol > 1000000 else "Neutral"
 
-        # --- NEW SCORING FORMULA ---
+        # --- 1. GET OPTIONS DATA ---
+        expected_move, risk_level, iv = get_options_intel(stock, price)
+
+        # --- 2. LEGISLATION ---
         score = 0
-        reason = "Neutral"
-        
-        # 2. Legislation (The 50% Factor)
         leg = get_legislative_intel(ticker)
         bill_age_days = 999
-        
         if leg:
-            try:
-                # Calculate Freshness
-                bill_date = datetime.strptime(leg['update_date'], "%Y-%m-%d")
-                bill_age_days = (datetime.now() - bill_date).days
-            except: bill_age_days = 30 # Default to fresh if date parse fails
-
-            if bill_age_days <= 30:
-                score += 50  # FRESH BILL BONUS
-                reason = "Active Legislation (<30d)"
-            elif bill_age_days <= 90:
-                score += 30  # MID-TERM BILL
-                reason = "Recent Legislation (<90d)"
-            else:
-                score += 10  # OLD BILL (stale penalty)
-                reason = "Old Legislation (>90d)"
-        else:
-            reason = "No Active Bills"
-
-        # 3. Congress Trading (The 10-20% Factor)
+            try: bill_age_days = (datetime.now() - datetime.strptime(leg['update_date'], "%Y-%m-%d")).days
+            except: bill_age_days = 30
+            if bill_age_days <= 30: score += 50
+            elif bill_age_days <= 90: score += 30
+            else: score += 10
+        
+        # --- 3. CONGRESS TRADING ---
         congress_note = "No Recent Activity"
         if ticker in STATIC_TRADES:
             td = STATIC_TRADES[ticker]
-            if td['type'] == "Purchase": 
-                score += 20
-                congress_note = f"{td['pol']} Bought (+20)"
-            elif td['type'] == "Sale": 
-                score -= 20
-                congress_note = f"{td['pol']} Sold (-20)"
+            if td['type'] == "Purchase": score += 20; congress_note = f"{td['pol']} Bought (+20)"
+            elif td['type'] == "Sale": score -= 20; congress_note = f"{td['pol']} Sold (-20)"
 
-        # 4. Volume (Confirmation)
-        if "High" in vol_str: score += 20
+        # --- 4. VOLUME & VOLATILITY FILTER ---
+        # If Risk is HIGH (IV > 80%), penalize the score unless it's a "Speculative" play
+        if "High" in risk_level: score -= 10 
+        if "High" in vol_str: score += 15
 
-        # Insider Trades (Context Only)
+        # Insider Trades
         action_text = "No Recent Trades"
         try:
             cutoff_date = datetime.now() - timedelta(days=540)
@@ -160,29 +164,32 @@ def analyze_stock(ticker: str):
         except: 
             if ticker == "NVDA": action_text = "Huang (Sold) Jan 15"
 
-        # Final Rating
-        if score >= 70: rating, sentiment, timing = "STRONG BUY", "Bullish", "Accumulate"
-        elif score >= 50: rating, sentiment, timing = "BUY", "Bullish", "Add Dip"
-        elif score <= 30: rating, sentiment, timing = "SELL", "Bearish", "Exit"
-        else: rating, sentiment, timing = "HOLD", "Neutral", "Wait"
+        if score >= 70: rating, sentiment = "STRONG BUY", "Bullish"
+        elif score >= 50: rating, sentiment = "BUY", "Bullish"
+        elif score <= 30: rating, sentiment = "SELL", "Bearish"
+        else: rating, sentiment = "HOLD", "Neutral"
 
         return { 
             "ticker": ticker, "raw_price": price, "price": price_str, 
             "legislation_score": score, "final_score": rating, 
-            "sentiment": sentiment, "timing_signal": timing, 
-            "volume_signal": vol_str, "congress_activity": congress_note, 
+            "sentiment": sentiment, "volume_signal": vol_str, 
+            "congress_activity": congress_note, 
             "corporate_activity": action_text, 
             "bill_id": leg.get('bill_id', 'N/A') if leg else "N/A", 
             "bill_sponsor": leg.get('bill_sponsor', 'N/A') if leg else "N/A", 
-            "market_impact": leg.get('market_impact', 'N/A') if leg else reason
+            "market_impact": leg.get('market_impact', 'N/A') if leg else "No Active Bills",
+            
+            # NEW FIELDS
+            "expected_move": expected_move,
+            "risk_level": risk_level
         }
     except Exception as e:
         return { 
             "ticker": ticker, "raw_price": 0, "price": "N/A", 
-            "legislation_score": 50, "final_score": "HOLD", 
-            "sentiment": "Neutral", "timing_signal": "Wait", "volume_signal": "N/A", 
+            "legislation_score": 50, "final_score": "HOLD", "sentiment": "Neutral", 
             "congress_activity": "Data Unavailable", "corporate_activity": "Data Unavailable", 
-            "bill_id": "N/A", "bill_sponsor": "N/A", "market_impact": "Error" 
+            "bill_id": "N/A", "bill_sponsor": "N/A", "market_impact": "Error",
+            "expected_move": "N/A", "risk_level": "Unknown"
         }
 
 # --- BACKGROUND WORKER ---
@@ -194,7 +201,7 @@ async def update_market_scanner():
         if bills: ACTIVE_BILLS_CACHE = bills
         
         results = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor: # Lower threads for options data safety
             future_to_ticker = {executor.submit(analyze_stock, sym): sym for sym in MARKET_UNIVERSE}
             for future in concurrent.futures.as_completed(future_to_ticker):
                 try: results.append(future.result())
@@ -203,11 +210,9 @@ async def update_market_scanner():
         try:
             results.sort(key=lambda x: x.get('legislation_score', 0), reverse=True)
             SERVER_CACHE["buys"] = results[:5]
-            
             cheap = [x for x in results if 0 < x.get('raw_price', 0) < 50]
             cheap.sort(key=lambda x: x.get('legislation_score', 0), reverse=True)
             SERVER_CACHE["cheap"] = cheap[:5]
-            
             results.sort(key=lambda x: x.get('legislation_score', 0), reverse=False)
             SERVER_CACHE["sells"] = results[:5]
         except: pass
@@ -216,11 +221,11 @@ async def update_market_scanner():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v36.0 (Freshness Weighting).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v37.0 (Options Volatility Layer).")
     asyncio.create_task(update_market_scanner())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="36.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="37.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.post("/api/prices")
