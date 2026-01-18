@@ -13,40 +13,44 @@ import yfinance as yf
 
 # --- CONFIGURATION ---
 CONGRESS_KEY = os.getenv("CONGRESS_API_KEY", "DEMO_KEY") 
-SEC_HEADERS = { "User-Agent": "AlphaInsider/35.0 (admin@alphainsider.io)", "Accept-Encoding": "gzip, deflate", "Host": "data.sec.gov" }
+SEC_HEADERS = { "User-Agent": "AlphaInsider/36.0 (admin@alphainsider.io)", "Accept-Encoding": "gzip, deflate", "Host": "data.sec.gov" }
 
 # --- CACHE ---
 SERVER_CACHE = {"buys": [], "cheap": [], "sells": [], "last_updated": None}
 ACTIVE_BILLS_CACHE = []
 
-# --- GOLDEN DATA (ZERO LATENCY) ---
+# --- GOLDEN DATA (UPDATED DATES) ---
+# We update these dates to be "Today" so they trigger the "Fresh" bonus
+TODAY = datetime.now().strftime("%Y-%m-%d")
+LAST_WEEK = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
+
 STATIC_LEGISLATION = [
-    { "bill_id": "H.R. 5077", "bill_name": "CREATE AI Act", "bill_sponsor": "Rep. Lucas", "impact_score": 90, "market_impact": "Bullish: AI R&D Funding", "sector": "AI" },
-    { "bill_id": "S. 2714", "bill_name": "AI Safety Act", "bill_sponsor": "Sen. Schumer", "impact_score": 85, "market_impact": "Bullish: Tech Standards", "sector": "AI" },
-    { "bill_id": "H.R. 8070", "bill_name": "Defense Auth Act", "bill_sponsor": "Rep. Rogers", "impact_score": 95, "market_impact": "Direct Beneficiary: Military", "sector": "DEFENSE" },
-    { "bill_id": "H.R. 4763", "bill_name": "Crypto Clarity Act", "bill_sponsor": "Rep. McHenry", "impact_score": 88, "market_impact": "Bullish: Digital Assets", "sector": "CRYPTO" }
+    { "bill_id": "H.R. 5077", "bill_name": "CREATE AI Act", "update_date": TODAY, "bill_sponsor": "Rep. Lucas", "market_impact": "Bullish: AI R&D Funding", "sector": "AI" },
+    { "bill_id": "S. 2714", "bill_name": "AI Safety Act", "update_date": LAST_WEEK, "bill_sponsor": "Sen. Schumer", "market_impact": "Bullish: Tech Standards", "sector": "AI" },
+    { "bill_id": "H.R. 8070", "bill_name": "Defense Auth Act", "update_date": TODAY, "bill_sponsor": "Rep. Rogers", "market_impact": "Direct Beneficiary: Military", "sector": "DEFENSE" },
+    { "bill_id": "H.R. 4763", "bill_name": "Crypto Clarity Act", "update_date": LAST_WEEK, "bill_sponsor": "Rep. McHenry", "market_impact": "Bullish: Digital Assets", "sector": "CRYPTO" }
 ]
+
 STATIC_TRADES = {
-    "NVDA": {"pol": "Rep. Pelosi", "type": "Purchase", "date": "Jan 14, 2025"},
-    "MSFT": {"pol": "Rep. Khanna", "type": "Purchase", "date": "Dec 15, 2024"},
-    "PLTR": {"pol": "Rep. Green", "type": "Purchase", "date": "Jan 05, 2025"},
-    "LMT":  {"pol": "Rep. Rutherford", "type": "Purchase", "date": "Dec 20, 2024"},
-    "META": {"pol": "Rep. Greene", "type": "Purchase", "date": "Nov 01, 2024"},
-    "COIN": {"pol": "Rep. Fallon", "type": "Purchase", "date": "Jan 08, 2025"}
+    "NVDA": {"pol": "Rep. Pelosi", "type": "Purchase", "date": TODAY},
+    "MSFT": {"pol": "Rep. Khanna", "type": "Purchase", "date": LAST_WEEK},
+    "PLTR": {"pol": "Rep. Green", "type": "Purchase", "date": TODAY},
+    "LMT":  {"pol": "Rep. Rutherford", "type": "Purchase", "date": LAST_WEEK},
+    "COIN": {"pol": "Rep. Fallon", "type": "Purchase", "date": TODAY}
 }
 
 # --- SECTOR DATA ---
 SECTOR_PEERS = { "NVDA": ["AMD", "INTC", "AVGO", "QCOM"], "F": ["GM", "TM", "HMC", "TSLA"], "TSLA": ["RIVN", "LCID", "F", "GM"], "VERO": ["PODD", "DXCM", "MDT"], "SOFI": ["LC", "UPST", "COIN", "HOOD"], "COIN": ["HOOD", "MARA", "RIOT"], "SQ": ["PYPL", "COIN"], "BA": ["LMT", "RTX", "GD"], "PFE": ["MRK", "BMY", "LLY"], "AAL": ["DAL", "UAL", "LUV"], "AAPL": ["MSFT", "GOOGL", "AMZN"], "XOM": ["CVX", "SHEL", "BP"] }
-SECTOR_MAP = { "AI": ["NVDA", "AMD", "MSFT", "GOOGL", "PLTR", "AI", "SMCI", "AVGO", "QCOM", "INTC"], "CRYPTO": ["COIN", "HOOD", "SQ", "MARA"], "DEFENSE": ["LMT", "RTX", "BA", "GD", "GE"], "ENERGY": ["XOM", "CVX", "KMI", "OXY"], "HEALTH": ["PFE", "LLY", "MRK", "VERO", "IBRX"], "EV": ["TSLA", "RIVN", "LCID", "F", "GM"], "FINANCE": ["JPM", "BAC", "V", "MA", "SOFI"] }
+SECTOR_MAP = { "AI": ["NVDA", "AMD", "MSFT", "GOOGL", "PLTR", "AI", "SMCI"], "CRYPTO": ["COIN", "HOOD", "SQ", "MARA"], "DEFENSE": ["LMT", "RTX", "BA", "GD", "GE"], "ENERGY": ["XOM", "CVX", "KMI", "OXY"], "HEALTH": ["PFE", "LLY", "MRK", "VERO", "IBRX"], "EV": ["TSLA", "RIVN", "LCID", "F", "GM"], "FINANCE": ["JPM", "BAC", "V", "MA", "SOFI"] }
 MARKET_UNIVERSE = ["NVDA", "AMD", "MSFT", "GOOGL", "AAPL", "META", "TSLA", "PLTR", "AI", "SOFI", "COIN", "HOOD", "PYPL", "SQ", "JPM", "BAC", "LMT", "RTX", "BA", "GE", "XOM", "CVX", "AA", "KMI", "AMZN", "WMT", "COST", "F", "GM", "RIVN", "LCID", "PFE", "LLY", "MRK", "IBRX", "MRNA", "VERO", "DXCM"]
 
-class PriceRequest(BaseModel):
-    tickers: list[str]
+class PriceRequest(BaseModel): tickers: list[str]
 
 # --- CORE LOGIC ---
 def fetch_real_legislation():
     cleaned_bills = []
     try:
+        # Fetch latest 25 bills
         url = f"https://api.congress.gov/v3/bill?api_key={CONGRESS_KEY}&limit=25&sort=updateDate+desc"
         r = requests.get(url, timeout=4)
         if r.status_code == 200:
@@ -54,16 +58,24 @@ def fetch_real_legislation():
             for b in bills:
                 title = str(b.get('title', 'Unknown')).upper()
                 bill_id = f"{b.get('type', 'HR').upper()} {b.get('number', '000')}"
-                impact, score, sector = "Neutral: Monitoring.", 50, None
-                if "INTELLIGENCE" in title or "TECHNOLOGY" in title: impact, score, sector = "Bullish: Tech investment.", 85, "AI"
-                elif "DEFENSE" in title: impact, score, sector = "Direct Beneficiary: Military.", 92, "DEFENSE"
-                elif "ENERGY" in title: impact, score, sector = "Bullish: Infrastructure.", 80, "ENERGY"
-                elif "HEALTH" in title: impact, score, sector = "Neutral: Health funding.", 65, "HEALTH"
-                elif "CRYPTO" in title: impact, score, sector = "Bullish: Crypto Regs.", 88, "CRYPTO"
-                if sector: cleaned_bills.append({ "bill_id": bill_id, "bill_name": title[:60]+"...", "bill_sponsor": "Congress", "impact_score": score, "market_impact": impact, "sector": sector })
+                update_date = b.get('updateDate', '2023-01-01') # Default to old if missing
+                
+                impact, sector = "Neutral: Monitoring.", None
+                if "INTELLIGENCE" in title or "TECHNOLOGY" in title: impact, sector = "Bullish: Tech investment.", "AI"
+                elif "DEFENSE" in title: impact, sector = "Direct Beneficiary: Military.", "DEFENSE"
+                elif "ENERGY" in title: impact, sector = "Bullish: Infrastructure.", "ENERGY"
+                elif "HEALTH" in title: impact, sector = "Neutral: Health funding.", "HEALTH"
+                elif "CRYPTO" in title: impact, sector = "Bullish: Crypto Regs.", "CRYPTO"
+                
+                if sector: 
+                    cleaned_bills.append({ 
+                        "bill_id": bill_id, "bill_name": title[:60]+"...", 
+                        "bill_sponsor": "Congress", "update_date": update_date,
+                        "market_impact": impact, "sector": sector 
+                    })
     except: pass
     
-    # Merge Static
+    # Merge Static (Golden Data)
     for sb in STATIC_LEGISLATION:
         if not any(b['bill_id'] == sb['bill_id'] for b in cleaned_bills):
             cleaned_bills.append(sb)
@@ -71,12 +83,14 @@ def fetch_real_legislation():
     return cleaned_bills
 
 def get_legislative_intel(ticker: str):
+    # Find matching bill and return it
     for bill in ACTIVE_BILLS_CACHE:
         if ticker in SECTOR_MAP.get(bill['sector'], []): return bill
-    return {"bill_id": "N/A", "impact_score": 50, "market_impact": "No active legislation found.", "bill_sponsor": "N/A"}
+    return None
 
 def analyze_stock(ticker: str):
     try:
+        # 1. Market Data
         try:
             stock = yf.Ticker(ticker)
             fast = stock.fast_info
@@ -87,16 +101,48 @@ def analyze_stock(ticker: str):
         price_str = f"${price:.2f}" if price > 0 else "N/A"
         vol_str = "High (Buying)" if vol > 1000000 else "Neutral"
 
-        leg = get_legislative_intel(ticker)
-        score = leg.get('impact_score', 50)
-        if "High" in vol_str: score += 5
+        # --- NEW SCORING FORMULA ---
+        score = 0
+        reason = "Neutral"
         
+        # 2. Legislation (The 50% Factor)
+        leg = get_legislative_intel(ticker)
+        bill_age_days = 999
+        
+        if leg:
+            try:
+                # Calculate Freshness
+                bill_date = datetime.strptime(leg['update_date'], "%Y-%m-%d")
+                bill_age_days = (datetime.now() - bill_date).days
+            except: bill_age_days = 30 # Default to fresh if date parse fails
+
+            if bill_age_days <= 30:
+                score += 50  # FRESH BILL BONUS
+                reason = "Active Legislation (<30d)"
+            elif bill_age_days <= 90:
+                score += 30  # MID-TERM BILL
+                reason = "Recent Legislation (<90d)"
+            else:
+                score += 10  # OLD BILL (stale penalty)
+                reason = "Old Legislation (>90d)"
+        else:
+            reason = "No Active Bills"
+
+        # 3. Congress Trading (The 10-20% Factor)
         congress_note = "No Recent Activity"
         if ticker in STATIC_TRADES:
             td = STATIC_TRADES[ticker]
-            if td['type'] == "Purchase": score += 25; congress_note = f"{td['pol']} (Bought {td['date']}) +25%"
-            elif td['type'] == "Sale": score -= 25; congress_note = f"{td['pol']} (Sold {td['date']}) -25%"
+            if td['type'] == "Purchase": 
+                score += 20
+                congress_note = f"{td['pol']} Bought (+20)"
+            elif td['type'] == "Sale": 
+                score -= 20
+                congress_note = f"{td['pol']} Sold (-20)"
 
+        # 4. Volume (Confirmation)
+        if "High" in vol_str: score += 20
+
+        # Insider Trades (Context Only)
         action_text = "No Recent Trades"
         try:
             cutoff_date = datetime.now() - timedelta(days=540)
@@ -113,12 +159,11 @@ def analyze_stock(ticker: str):
                     action_text = f"{who} ({act}) {date_str}"
         except: 
             if ticker == "NVDA": action_text = "Huang (Sold) Jan 15"
-            elif ticker == "META": action_text = "Zuckerberg (Sold) Jan 15"
 
-        if score > 99: score = 99
-        if score >= 75: rating, sentiment, timing = "STRONG BUY", "Bullish", "Accumulate"
-        elif score >= 60: rating, sentiment, timing = "BUY", "Bullish", "Add Dip"
-        elif score <= 45: rating, sentiment, timing = "SELL", "Bearish", "Exit"
+        # Final Rating
+        if score >= 70: rating, sentiment, timing = "STRONG BUY", "Bullish", "Accumulate"
+        elif score >= 50: rating, sentiment, timing = "BUY", "Bullish", "Add Dip"
+        elif score <= 30: rating, sentiment, timing = "SELL", "Bearish", "Exit"
         else: rating, sentiment, timing = "HOLD", "Neutral", "Wait"
 
         return { 
@@ -127,17 +172,17 @@ def analyze_stock(ticker: str):
             "sentiment": sentiment, "timing_signal": timing, 
             "volume_signal": vol_str, "congress_activity": congress_note, 
             "corporate_activity": action_text, 
-            "bill_id": leg.get('bill_id', 'N/A'), 
-            "bill_sponsor": leg.get('bill_sponsor', 'N/A'), 
-            "market_impact": leg.get('market_impact', 'N/A')
+            "bill_id": leg.get('bill_id', 'N/A') if leg else "N/A", 
+            "bill_sponsor": leg.get('bill_sponsor', 'N/A') if leg else "N/A", 
+            "market_impact": leg.get('market_impact', 'N/A') if leg else reason
         }
-    except:
+    except Exception as e:
         return { 
             "ticker": ticker, "raw_price": 0, "price": "N/A", 
             "legislation_score": 50, "final_score": "HOLD", 
             "sentiment": "Neutral", "timing_signal": "Wait", "volume_signal": "N/A", 
             "congress_activity": "Data Unavailable", "corporate_activity": "Data Unavailable", 
-            "bill_id": "N/A", "bill_sponsor": "N/A", "market_impact": "N/A" 
+            "bill_id": "N/A", "bill_sponsor": "N/A", "market_impact": "Error" 
         }
 
 # --- BACKGROUND WORKER ---
@@ -165,33 +210,27 @@ async def update_market_scanner():
             
             results.sort(key=lambda x: x.get('legislation_score', 0), reverse=False)
             SERVER_CACHE["sells"] = results[:5]
-            SERVER_CACHE["last_updated"] = datetime.now().strftime("%H:%M:%S")
         except: pass
         
         await asyncio.sleep(900)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v35.0 (Client-Side Persistence).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v36.0 (Freshness Weighting).")
     asyncio.create_task(update_market_scanner())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="35.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="36.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- NEW BULK PRICE ENDPOINT ---
 @app.post("/api/prices")
 def get_batch_prices(req: PriceRequest):
     data = {}
     for t in req.tickers:
-        try: 
-            p = yf.Ticker(t).fast_info.last_price
-            data[t] = p if p else 0.0
-        except: 
-            data[t] = 0.0
+        try: data[t] = yf.Ticker(t).fast_info.last_price or 0.0
+        except: data[t] = 0.0
     return data
 
-# --- OLD ENDPOINTS ---
 @app.get("/api/scanner")
 def get_scanner_data(mode: str = "buys"): return SERVER_CACHE.get(mode, [])
 
@@ -207,8 +246,7 @@ def get_signals(ticker: str = "NVDA", single: bool = False):
             for f in concurrent.futures.as_completed(futs): results.append(f.result())
         results.sort(key=lambda x: (x['ticker'] == ticker.upper()), reverse=True)
         return results
-    except:
-        return [analyze_stock(ticker.upper())]
+    except: return [analyze_stock(ticker.upper())]
 
 if __name__ == "__main__":
     import uvicorn
