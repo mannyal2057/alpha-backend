@@ -14,17 +14,13 @@ import numpy as np
 
 # --- CONFIGURATION ---
 CONGRESS_KEY = os.getenv("CONGRESS_API_KEY", "DEMO_KEY") 
-SEC_HEADERS = { "User-Agent": "AlphaInsider/41.0 (admin@alphainsider.io)", "Accept-Encoding": "gzip, deflate", "Host": "data.sec.gov" }
-
-# --- BROWSER MASQUERADE (Anti-Blocking) ---
-# We force yfinance to look like a Chrome browser
-SESSION = requests.Session()
-SESSION.headers.update({
+# Anti-Block Headers (Masquerade as Chrome)
+SEC_HEADERS = { 
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-    "Referer": "https://www.google.com/"
-})
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"
+}
+SESSION = requests.Session()
+SESSION.headers.update(SEC_HEADERS)
 
 # --- CACHE ---
 SERVER_CACHE = {"buys": [], "cheap": [], "sells": [], "last_updated": None}
@@ -32,35 +28,23 @@ ACTIVE_BILLS_CACHE = []
 
 # --- GOLDEN DATA (FALLBACKS) ---
 TODAY = datetime.now().strftime("%Y-%m-%d")
-STATIC_FED_MEETINGS = ["2026-01-28", "2026-03-18", "2026-05-06"] 
-
 STATIC_LEGISLATION = [
     { "bill_id": "H.R. 5077", "bill_name": "CREATE AI Act", "update_date": TODAY, "bill_sponsor": "Rep. Lucas", "market_impact": "Bullish: AI R&D Funding", "sector": "AI" },
     { "bill_id": "H.R. 8070", "bill_name": "Defense Auth Act", "update_date": TODAY, "bill_sponsor": "Rep. Rogers", "market_impact": "Direct Beneficiary: Military", "sector": "DEFENSE" },
     { "bill_id": "H.R. 4763", "bill_name": "Crypto Clarity Act", "update_date": TODAY, "bill_sponsor": "Rep. McHenry", "market_impact": "Bullish: Digital Assets", "sector": "CRYPTO" }
 ]
-
 STATIC_TRADES = {
     "NVDA": {"pol": "Rep. Pelosi", "type": "Purchase", "date": TODAY},
     "PLTR": {"pol": "Rep. Green", "type": "Purchase", "date": TODAY},
     "COIN": {"pol": "Rep. Fallon", "type": "Purchase", "date": TODAY},
-    "LMT": {"pol": "Rep. Rutherford", "type": "Purchase", "date": TODAY}
+    "LMT":  {"pol": "Rep. Rutherford", "type": "Purchase", "date": TODAY}
 }
 
-# --- STATIC PRICE DATABASE (For when Yahoo Bans Us) ---
-# These prices act as the "Base" for simulation mode
-DEMO_PRICES = {
-    "NVDA": 185.00, "AMD": 230.00, "MSFT": 460.00, "GOOGL": 330.00, "AAPL": 255.00,
-    "PLTR": 170.00, "AI": 13.00, "SOFI": 14.50, "COIN": 310.00, "HOOD": 35.00,
-    "LMT": 580.00, "RTX": 200.00, "BA": 245.00, "XOM": 120.00, "F": 11.50,
-    "GM": 45.00, "TSLA": 410.00, "RIVN": 12.00, "PFE": 25.00, "VERO": 8.00
-}
-
-# --- SECTOR DATA ---
+# --- SMART PEER DATABASE (Fixes 'AI' Search) ---
 SECTOR_PEERS = {
     "NVDA": ["AMD", "INTC", "AVGO", "TSM"],
     "AMD":  ["NVDA", "INTC", "ARM", "TSM"],
-    "AI":   ["PLTR", "SOFI", "SNOW", "PATH"], 
+    "AI":   ["PLTR", "SOFI", "SNOW", "PATH"], # <--- FIXED
     "PLTR": ["AI", "SNOW", "DDOG", "MDB"],
     "F":    ["GM", "TM", "TSLA", "RIVN"],
     "TSLA": ["RIVN", "LCID", "F", "GM"],
@@ -76,39 +60,51 @@ SECTOR_PEERS = {
 }
 
 SECTOR_MAP = { 
-    "AI": ["NVDA", "AMD", "MSFT", "GOOGL", "PLTR", "AI", "SMCI", "AVGO", "INTC", "ARM"], 
-    "CRYPTO": ["COIN", "HOOD", "SQ", "MARA", "RIOT", "MSTR"], 
-    "DEFENSE": ["LMT", "RTX", "BA", "GD", "GE", "NOC", "LHX"], 
-    "ENERGY": ["XOM", "CVX", "KMI", "OXY", "SLB", "HAL"], 
-    "HEALTH": ["PFE", "LLY", "MRK", "VERO", "IBRX", "JNJ", "UNH"], 
-    "EV": ["TSLA", "RIVN", "LCID", "F", "GM", "TM"], 
-    "FINANCE": ["JPM", "BAC", "V", "MA", "SOFI", "C", "WFC", "GS"] 
+    "AI": ["NVDA", "AMD", "MSFT", "GOOGL", "PLTR", "AI", "SMCI"], 
+    "CRYPTO": ["COIN", "HOOD", "SQ", "MARA", "RIOT"], 
+    "DEFENSE": ["LMT", "RTX", "BA", "GD", "GE"], 
+    "ENERGY": ["XOM", "CVX", "KMI", "OXY"], 
+    "HEALTH": ["PFE", "LLY", "MRK", "VERO", "IBRX"], 
+    "EV": ["TSLA", "RIVN", "LCID", "F", "GM"], 
+    "FINANCE": ["JPM", "BAC", "V", "MA", "SOFI"] 
 }
 
+# Default Demo Prices (Safety Net)
+DEMO_PRICES = { "NVDA": 185.0, "AI": 13.0, "PLTR": 170.0, "MSFT": 460.0, "AMD": 230.0, "COIN": 310.0 }
 MARKET_UNIVERSE = ["NVDA", "AMD", "MSFT", "GOOGL", "AAPL", "META", "TSLA", "PLTR", "AI", "SOFI", "COIN", "HOOD", "JPM", "BAC", "LMT", "RTX", "BA", "XOM", "CVX", "KMI", "AMZN", "WMT", "COST", "F", "GM", "RIVN", "LCID", "PFE", "LLY", "MRK", "VERO"]
 
 class PriceRequest(BaseModel): tickers: list[str]
 
 # --- INTEL ENGINES ---
-def get_volatility_regime(stock, hist):
+def get_live_data(ticker):
+    """Fetches data with Anti-Block protection + Simulation Fallback"""
     try:
-        if hist is None or hist.empty: return 1.5, 1.2, "High Beta" # Fallback
+        stock = yf.Ticker(ticker, session=SESSION)
+        fast = stock.fast_info
+        price = fast.last_price
+        vol = fast.last_volume
+        if not price: raise Exception("No Data")
+        return stock, price, vol, False
+    except:
+        # Fallback to Demo Data
+        p = DEMO_PRICES.get(ticker, 100.0) * random.uniform(0.99, 1.01)
+        return None, p, 5000000, True
+
+def get_volatility_regime(stock, hist, is_sim):
+    if is_sim or hist is None: return 2.5, 1.2, "Normal"
+    try:
         high_low = hist['High'] - hist['Low']
-        high_close = (hist['High'] - hist['Close'].shift()).abs()
-        low_close = (hist['Low'] - hist['Close'].shift()).abs()
-        ranges = pd.concat([high_low, high_close, low_close], axis=1)
-        true_range = ranges.max(axis=1)
-        atr = true_range.rolling(14).mean().iloc[-1]
+        atr = high_low.rolling(14).mean().iloc[-1]
         beta = stock.info.get('beta', 1.0)
         regime = "High Beta" if beta > 1.3 else "Low Beta" if beta < 0.8 else "Normal"
         return atr, beta, regime
     except: return 0.0, 1.0, "Normal"
 
-def get_options_structure(stock, price):
+def get_options_intel(stock, price, is_sim):
+    if is_sim: return "$N/A", "$N/A", 3.5, 0.4, "Neutral"
     try:
         exps = stock.options
-        if not exps: return "N/A", "N/A", "N/A", 0.0, "Neutral"
-
+        if not exps: return "N/A", "N/A", 0.0, 0.0, "Neutral"
         chain = stock.option_chain(exps[0])
         calls, puts = chain.calls, chain.puts
         
@@ -121,77 +117,32 @@ def get_options_structure(stock, price):
         call_iv = atm_call['impliedVolatility'].values[0]
         put_iv = atm_put['impliedVolatility'].values[0]
         
-        skew_diff = call_iv - put_iv
-        skew_signal = "Bullish (Call Skew)" if skew_diff > 0.05 else "Bearish (Put Skew)" if skew_diff < -0.05 else "Neutral Skew"
-
-        straddle_cost = (atm_call['lastPrice'].values[0] + atm_put['lastPrice'].values[0])
-        exp_move_pct = (straddle_cost / price) * 100
-        avg_iv = (call_iv + put_iv) / 2
+        skew = "Bullish (Call Skew)" if (call_iv - put_iv) > 0.05 else "Bearish (Put Skew)" if (call_iv - put_iv) < -0.05 else "Neutral"
+        cost = (atm_call['lastPrice'].values[0] + atm_put['lastPrice'].values[0])
+        move = (cost / price) * 100
         
-        return f"${call_wall:.0f}", f"${put_wall:.0f}", exp_move_pct, avg_iv, skew_signal
+        return f"${call_wall:.0f}", f"${put_wall:.0f}", move, (call_iv+put_iv)/2, skew
     except: return "N/A", "N/A", 0.0, 0.0, "Neutral"
 
-def get_event_risk(ticker, stock):
-    risk_score, events = 0, []
-    try:
-        cal = stock.calendar
-        if not cal.empty:
-            days_to = (pd.to_datetime(cal.iloc[0, 0]).replace(tzinfo=None) - datetime.now()).days
-            if 0 <= days_to <= 7: risk_score += 3; events.append(f"Earnings {days_to}d")
-    except: pass
-    return risk_score, ", ".join(events) if events else "None"
-
-def get_live_or_simulated_data(ticker):
-    """
-    Attempts to get real data. If 401/Blocked, returns simulated realistic data.
-    """
-    try:
-        stock = yf.Ticker(ticker, session=SESSION) # Use browser headers
-        fast = stock.fast_info
-        price = fast.last_price
-        vol = fast.last_volume
-        
-        if not price: raise Exception("No Price")
-        return stock, price, vol, False # False = Not Simulated
-    except:
-        # SIMULATION MODE
-        base_price = DEMO_PRICES.get(ticker, 100.00)
-        # Add tiny random noise so it looks "live"
-        sim_price = base_price * random.uniform(0.98, 1.02)
-        return None, sim_price, 5000000, True # True = Simulated
-
 def analyze_stock(ticker: str):
-    # Safe Defaults
-    safe_obj = { 
-        "ticker": ticker, "price": "N/A", "final_score": "HOLD", "sentiment": "Neutral", 
-        "risk_level": "Unknown", "expected_move": "N/A", "targets": "N/A", "skew": "N/A",
-        "volatility_regime": "N/A", "congress_activity": "N/A", "bill_id": "N/A", "corporate_activity": "Data Unavailable"
-    }
-
     try:
-        # 1. Get Data (Live or Sim)
-        stock, price, vol, is_sim = get_live_or_simulated_data(ticker)
+        # 1. Get Data
+        stock, price, vol, is_sim = get_live_data(ticker)
         
-        # 2. Derive Metrics
+        # 2. Get Advanced Metrics
         if not is_sim:
             try: hist = stock.history(period="1mo")
             except: hist = None
-            atr, beta, vol_regime = get_volatility_regime(stock, hist)
-            call_wall, put_wall, exp_move_pct, iv, skew_signal = get_options_structure(stock, price)
-            event_risk_score, upcoming_events = get_event_risk(ticker, stock)
-        else:
-            # Simulated Metrics for Demo Mode
-            atr, beta, vol_regime = 2.5, 1.2, "Normal"
-            call_wall, put_wall = f"${price*1.1:.0f}", f"${price*0.9:.0f}"
-            exp_move_pct, iv, skew_signal = 3.5, 0.4, "Neutral"
-            event_risk_score, upcoming_events = 0, "None"
-
+        else: hist = None
+        
+        atr, beta, regime = get_volatility_regime(stock, hist, is_sim)
+        call_w, put_w, move_pct, iv, skew = get_options_intel(stock, price, is_sim)
+        
         # 3. Targets
-        move_val = (exp_move_pct / 100) * price
-        bull_target = price + move_val
-        bear_target = price - move_val
+        target_up = price * (1 + (move_pct/100))
+        target_down = price * (1 - (move_pct/100))
 
-        # 4. Legislation
+        # 4. Legislation & Congress
         leg_score = 50
         leg = None
         for bill in ACTIVE_BILLS_CACHE:
@@ -203,39 +154,38 @@ def analyze_stock(ticker: str):
             td = STATIC_TRADES[ticker]
             if td['type'] == "Purchase": leg_score += 20; congress_note = f"{td['pol']} Bought (+20)"
 
-        # 5. Scoring
-        if "Bullish" in skew_signal: leg_score += 10
-        elif "Bearish" in skew_signal: leg_score -= 10
+        # 5. Risk & Scoring
+        if "Bullish" in skew: leg_score += 10
+        risk_val = (iv * 100) + (beta * 10)
+        risk = "High" if risk_val > 60 else "Medium" if risk_val > 30 else "Low"
         
-        risk_val = (iv * 100) + (beta * 10) + (event_risk_score * 10)
-        risk_level = "High" if risk_val > 60 else "Medium" if risk_val > 30 else "Low"
-
-        if leg_score >= 80 and risk_level == "Low": rating = "STRONG BUY"
+        if leg_score >= 80 and risk == "Low": rating = "STRONG BUY"
         elif leg_score >= 60: rating = "BUY"
         else: rating = "HOLD"
 
         return { 
-            "ticker": ticker, "price": f"${price:.2f}",
+            "ticker": ticker, "price": f"${price:.2f}", "raw_price": price,
             "final_score": rating, "sentiment": "Bullish" if rating != "HOLD" else "Neutral",
-            "risk_level": risk_level, 
-            "expected_move": f"+/- {exp_move_pct:.1f}%",
-            "targets": f"${bear_target:.0f} - ${bull_target:.0f}", 
-            "volatility_regime": vol_regime, 
-            "skew": skew_signal, 
+            "risk_level": risk, "expected_move": f"+/- {move_pct:.1f}%",
+            "targets": f"${target_down:.0f} - ${target_up:.0f}",
+            "volatility_regime": regime, "skew": skew,
             "congress_activity": congress_note,
             "bill_id": leg.get('bill_id', 'N/A') if leg else "N/A",
-            "corporate_activity": upcoming_events if upcoming_events != "None" else "No Events"
+            "corporate_activity": "Data Unavailable"
         }
-    except:
-        return safe_obj
+    except Exception as e:
+        return { "ticker": ticker, "price": "N/A", "raw_price": 0, "final_score": "HOLD", "sentiment": "Neutral", "risk_level": "Unknown", "expected_move": "N/A", "targets": "N/A", "skew": "N/A", "volatility_regime": "N/A", "congress_activity": "N/A", "bill_id": "N/A", "corporate_activity": "Data Unavailable" }
 
 # --- SEARCH ENGINE ---
 def get_peers(ticker):
+    # 1. Direct Match (Prioritized)
     if ticker in SECTOR_PEERS: return SECTOR_PEERS[ticker]
+    # 2. Sector Match
     for sector, stocks in SECTOR_MAP.items():
         if ticker in stocks:
             peers = [s for s in stocks if s != ticker]
             return peers[:4] if len(peers) >= 4 else peers
+    # 3. Fallback
     return ["AAPL", "MSFT", "NVDA", "GOOGL"]
 
 def fetch_real_legislation(): return STATIC_LEGISLATION
@@ -249,30 +199,36 @@ async def update_market_scanner():
             futs = {executor.submit(analyze_stock, s): s for s in MARKET_UNIVERSE}
             for f in concurrent.futures.as_completed(futs): results.append(f.result())
         try:
+            # Sort Top Picks
             results.sort(key=lambda x: (x.get('final_score') == "STRONG BUY", x.get('final_score') == "BUY"), reverse=True)
             SERVER_CACHE["buys"] = results[:5]
-            cheap_stocks = [x for x in results if 0 < float(x.get('price', '$0').replace('$','')) < 50]
-            cheap_stocks.sort(key=lambda x: (x.get('final_score') == "STRONG BUY", x.get('final_score') == "BUY"), reverse=True)
+            
+            # Sort Cheap Picks (STRICT FILTER < $50)
+            cheap_stocks = [x for x in results if 0 < x.get('raw_price', 0) < 50]
+            cheap_stocks.sort(key=lambda x: (x.get('final_score') == "STRONG BUY"), reverse=True)
             SERVER_CACHE["cheap"] = cheap_stocks[:5]
-            SERVER_CACHE["sells"] = results[-5:]
+            
+            # Sort Sells
+            results.sort(key=lambda x: (x.get('final_score') == "STRONG BUY"), reverse=False)
+            SERVER_CACHE["sells"] = results[:5]
         except: pass
         await asyncio.sleep(900)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v41.0 (Anti-Block + Sim Mode).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v42.0 (Unified Master).")
     asyncio.create_task(update_market_scanner())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="41.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="42.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.post("/api/prices")
 def get_batch_prices(req: PriceRequest):
     data = {}
     for t in req.tickers:
-        stock, price, vol, is_sim = get_live_or_simulated_data(t)
-        data[t] = price
+        _, p, _, _ = get_live_data(t)
+        data[t] = p
     return data
 
 @app.get("/api/scanner")
