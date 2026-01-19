@@ -28,7 +28,7 @@ STATIC_TRADES = {
     "COIN": {"pol": "Rep. Fallon", "type": "Purchase", "date": TODAY}
 }
 
-# --- FAIL-SAFE DATABASE (Realistic Backups) ---
+# --- FAIL-SAFE DATABASE ---
 FAILSAFE_DATA = { 
     "NVDA": [185.0, 1.4], "AI": [13.0, 1.8], "PLTR": [170.0, 1.5], "MSFT": [460.0, 0.9], 
     "AMD": [230.0, 1.4], "COIN": [310.0, 2.5], "LMT": [580.0, 0.5], "AVGO": [1050.0, 1.1],
@@ -46,6 +46,16 @@ MARKET_UNIVERSE = list(FAILSAFE_DATA.keys())
 
 class PriceRequest(BaseModel): tickers: list[str]
 
+# --- APP INITIALIZATION (Moved to Top) ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print(f"💎 SYSTEM BOOT: AlphaInsider v49.1 (Order Fix).")
+    asyncio.create_task(update_market_scanner())
+    yield
+
+app = FastAPI(title="AlphaInsider Pro", version="49.1", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
 # --- FAST DATA ENGINE ---
 def get_live_data_fmp(ticker):
     try:
@@ -62,7 +72,6 @@ def get_live_data_fmp(ticker):
     # Fast Fallback
     base = FAILSAFE_DATA.get(ticker, [100.0, 1.0])
     p = base[0] * random.uniform(0.99, 1.01)
-    # Simulate Volatility for Demo Mode
     sim_change = base[1] * random.uniform(-1.5, 1.5)
     return p, 5000000, sim_change, True
 
@@ -103,7 +112,7 @@ def analyze_stock(ticker: str):
         }
     except: return { "ticker": ticker, "price": "N/A", "final_score": "HOLD", "raw_price": 0 }
 
-# --- DEBUG ENDPOINT ---
+# --- ENDPOINTS ---
 @app.get("/api/debug")
 def debug_api():
     masked = FMP_KEY[:4] + "****" if FMP_KEY and len(FMP_KEY) > 4 else "NOT FOUND"
@@ -112,7 +121,22 @@ def debug_api():
         return { "status": "Online", "key": masked, "code": r.status_code, "response": r.json() }
     except Exception as e: return { "status": "Offline", "error": str(e) }
 
-# --- SERVER ---
+@app.post("/api/prices")
+def get_batch_prices(req: PriceRequest):
+    data = {}
+    for t in req.tickers:
+        p, _, _, _ = get_live_data_fmp(t)
+        data[t] = p
+    return data
+
+@app.get("/api/scanner")
+def get_scanner_data(mode: str = "buys"): return SERVER_CACHE.get(mode, [])
+
+@app.get("/api/signals")
+def get_signals(ticker: str = "NVDA", single: bool = False):
+    return [analyze_stock(ticker.upper())]
+
+# --- SERVER WORKER ---
 async def update_market_scanner():
     global ACTIVE_BILLS_CACHE
     while True:
@@ -139,30 +163,6 @@ async def update_market_scanner():
             SERVER_CACHE["sells"] = sells[:5]
         except: pass
         await asyncio.sleep(900)
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v49.0 (Speed Patch).")
-    asyncio.create_task(update_market_scanner())
-    yield
-
-app = FastAPI(title="AlphaInsider Pro", version="49.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-
-@app.post("/api/prices")
-def get_batch_prices(req: PriceRequest):
-    data = {}
-    for t in req.tickers:
-        p, _, _, _ = get_live_data_fmp(t)
-        data[t] = p
-    return data
-
-@app.get("/api/scanner")
-def get_scanner_data(mode: str = "buys"): return SERVER_CACHE.get(mode, [])
-
-@app.get("/api/signals")
-def get_signals(ticker: str = "NVDA", single: bool = False):
-    return [analyze_stock(ticker.upper())]
 
 if __name__ == "__main__":
     import uvicorn
