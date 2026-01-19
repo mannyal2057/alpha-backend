@@ -27,7 +27,7 @@ EVENT_CACHE = {"ipos": [], "earnings": [], "economic": []}
 # --- 1. CORE DATA ---
 TODAY = datetime.now().strftime("%Y-%m-%d")
 
-# UPDATED: Added 'bill_sponsor' to support the frontend display
+# UPDATED: Includes 'bill_sponsor' for the frontend
 STATIC_LEGISLATION = [
     { 
         "bill_id": "H.R. 5077", 
@@ -73,6 +73,7 @@ FAILSAFE_DATA = {
     "XOM": [110.0, 0.6], "CVX": [150.0, 0.7], "KMI": [20.0, 0.5], "WMT": [160.0, 0.4],
     "COST": [720.0, 0.6], "GM": [45.0, 1.1], "LCID": [3.5, 3.0]
 }
+
 SECTOR_PEERS = {
     "NVDA": ["AMD", "INTC", "AVGO", "TSM"],
     "AMD":  ["NVDA", "INTC", "ARM", "TSM"],
@@ -90,7 +91,16 @@ SECTOR_PEERS = {
     "PFE":  ["MRK", "LLY", "JNJ", "ABBV"],
     "JPM":  ["BAC", "C", "WFC", "GS"]
 }
-SECTOR_MAP = { "AI": ["NVDA", "AMD", "MSFT", "GOOGL", "PLTR", "AI"], "CRYPTO": ["COIN", "HOOD"], "DEFENSE": ["LMT", "RTX", "BA"], "EV": ["TSLA", "RIVN", "F", "GM"], "FINANCE": ["JPM", "BAC", "SOFI"] }
+
+# Used to map legislation to specific tickers
+SECTOR_MAP = { 
+    "AI": ["NVDA", "AMD", "MSFT", "GOOGL", "PLTR", "AI"], 
+    "CRYPTO": ["COIN", "HOOD"], 
+    "DEFENSE": ["LMT", "RTX", "BA"], 
+    "EV": ["TSLA", "RIVN", "F", "GM"], 
+    "FINANCE": ["JPM", "BAC", "SOFI"] 
+}
+
 MARKET_UNIVERSE = list(FAILSAFE_DATA.keys())
 
 class PriceRequest(BaseModel): tickers: list[str]
@@ -98,13 +108,21 @@ class PriceRequest(BaseModel): tickers: list[str]
 # --- APP STARTUP ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v64.0 (Math Fix + Legislation Patch).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v65.0 (Optimization Complete).")
     asyncio.create_task(update_market_scanner())
     asyncio.create_task(update_event_calendar())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="64.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="AlphaInsider Pro", version="65.0", lifespan=lifespan)
+
+# CORS: Allow all for development flexibility
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- NEW ENGINE: NEWS SENTIMENT ---
 def get_news_sentiment(ticker):
@@ -181,12 +199,12 @@ def analyze_stock(ticker: str):
         real_iv, gex, opt_source, regime = get_options_data(ticker, price)
         news_sentiment, news_score = get_news_sentiment(ticker) 
         
-        # --- FIX: Rule of 16 for Realistic Expected Moves ---
+        # --- CALCULATION FIX: Rule of 16 ---
         if opt_source.startswith("Real"):
-            volatility_metric = real_iv * 100
-            # FIX: Divide Annual IV by 16 to get Daily Expected Move
+            # real_iv is annual (e.g. 0.45), divide by 16 for daily move
             daily_move_pct = (real_iv / 16) * 100 
-            expected_move_pct = daily_move_pct
+            expected_move_pct = daily_move_pct 
+            volatility_metric = real_iv * 100 # Keep raw IV for risk scoring
         else:
             volatility_metric = vol_proxy * 1.5
             expected_move_pct = vol_proxy * 1.5
@@ -331,7 +349,7 @@ def get_scanner(mode: str = "buys"): return SERVER_CACHE.get(mode, [])
 @app.get("/api/events")
 def get_events(): return EVENT_CACHE
 
-# --- FIX: Updated Legislation Endpoint ---
+# --- LEGISLATION ENDPOINT (FIXED) ---
 @app.get("/api/legislation")
 def get_legislation():
     # enhance the static data with live "affected_stocks" lists
@@ -340,6 +358,7 @@ def get_legislation():
     for bill in STATIC_LEGISLATION:
         bill_data = bill.copy()
         sector = bill.get("sector")
+        # Lookup stocks in the map, default to empty list if sector missing
         affected = SECTOR_MAP.get(sector, [])
         bill_data["affected_stocks"] = affected
         enhanced_legislation.append(bill_data)
