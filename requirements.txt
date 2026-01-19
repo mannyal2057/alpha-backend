@@ -5,3 +5,5 @@ pandas
 pydantic
 python-multipart
 yfinance
+python-multipart
+polygon-api-client

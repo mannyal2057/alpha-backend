@@ -9,18 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 
-# --- LIBRARIES ---
-# Ensure 'polygon-api-client' is in requirements.txt
-try:
-    from polygon import RESTClient
-    POLYGON_AVAILABLE = True
-except ImportError:
-    POLYGON_AVAILABLE = False
-    print("⚠️ Polygon Library not found. Using Math Fallback.")
-
 # --- CONFIGURATION ---
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
-POLYGON_KEY = os.getenv("POLYGON_API_KEY", "").strip()
 
 # --- CACHE ---
 SERVER_CACHE = {"buys": [], "cheap": [], "sells": [], "last_updated": None}
@@ -51,7 +41,7 @@ FAILSAFE_DATA = {
     "COST": [720.0, 0.6], "GM": [45.0, 1.1], "LCID": [3.5, 3.0]
 }
 
-# --- SMART PEER DATABASE ---
+# --- SMART PEER DATABASE (Restored) ---
 SECTOR_PEERS = {
     "NVDA": ["AMD", "INTC", "AVGO", "TSM"],
     "AMD":  ["NVDA", "INTC", "ARM", "TSM"],
@@ -69,6 +59,7 @@ SECTOR_PEERS = {
     "PFE":  ["MRK", "LLY", "JNJ", "ABBV"],
     "JPM":  ["BAC", "C", "WFC", "GS"]
 }
+
 SECTOR_MAP = { "AI": ["NVDA", "AMD", "MSFT", "GOOGL", "PLTR", "AI"], "CRYPTO": ["COIN", "HOOD"], "DEFENSE": ["LMT", "RTX", "BA"], "EV": ["TSLA", "RIVN", "F", "GM"], "FINANCE": ["JPM", "BAC", "SOFI"] }
 MARKET_UNIVERSE = list(FAILSAFE_DATA.keys())
 
@@ -77,22 +68,14 @@ class PriceRequest(BaseModel): tickers: list[str]
 # --- APP STARTUP ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v60.0 (Hedge Fund Edition).")
-    
-    # Check Keys
-    f_stat = "ACTIVE" if len(FINNHUB_KEY) > 5 else "MISSING"
-    p_stat = "ACTIVE" if len(POLYGON_KEY) > 5 and POLYGON_AVAILABLE else "DISABLED (Simulated Mode)"
-    
-    print(f"🔑 FINNHUB: {f_stat}")
-    print(f"🔑 POLYGON: {p_stat}")
-    
+    print(f"💎 SYSTEM BOOT: AlphaInsider v59.0 (Peers Restored).")
     asyncio.create_task(update_market_scanner())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="60.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="59.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- 2. DATA FEED (Finnhub Prices) ---
+# --- 2. DATA FEED (Finnhub) ---
 def get_market_data(ticker):
     try:
         url = f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_KEY}"
@@ -109,81 +92,14 @@ def get_market_data(ticker):
     sim_change = base[1] * random.uniform(-1.5, 1.5)
     return p, sim_change, abs(sim_change * 1.2), True
 
-# --- 3. OPTIONS ENGINE (Polygon GEX/IV) ---
-def get_options_data(ticker, current_price):
-    # FALLBACK: If Polygon is missing, use "Volatility Proxy" Math
-    if not POLYGON_AVAILABLE or len(POLYGON_KEY) < 5:
-        return 0, 0, "Simulated", "Standard"
-
-    try:
-        client = RESTClient(POLYGON_KEY)
-        # Fetch options expiring closest to "next Friday" usually, but 'nearest_friday' helper exists in some libs
-        # For raw REST, we'll iterate the chain. This is a simplified "snapshot" call.
-        
-        # Note: Free Tier Polygon DOES NOT return Options Data. 
-        # This block catches the 403/404 and fails over gracefully.
-        chain = client.list_snapshot_options_chain(
-            ticker,
-            params={"expiration_date": "gte:2024-01-01", "limit": 100} # Simplified query
-        )
-
-        total_gex = 0
-        atm_iv = 0
-        found_data = False
-
-        for contract in chain:
-            if not contract.greeks or not contract.open_interest: continue
-            found_data = True
-            
-            gamma = contract.greeks.gamma or 0
-            oi = contract.open_interest or 0
-            
-            # GEX Calculation
-            gex_val = (gamma * oi * 100 * current_price)
-            if contract.details.contract_type == "call":
-                total_gex += gex_val
-            else:
-                total_gex -= gex_val
-            
-            # Find ATM IV
-            if abs(contract.details.strike_price - current_price) < (current_price * 0.02):
-                atm_iv = contract.greeks.implied_volatility or 0
-
-        if not found_data:
-            return 0, 0, "Simulated (No Data)", "Standard"
-
-        # Interpret Signals
-        regime = "Neutral"
-        if total_gex > 5000000: regime = "Positive GEX (Stabilizing)"
-        elif total_gex < -5000000: regime = "Negative GEX (Volatile)"
-        
-        return atm_iv, total_gex, "Real Polygon Data", regime
-
-    except Exception as e:
-        # If API fails (e.g. Free Tier restriction), fallback
-        return 0, 0, "Simulated (API Limit)", "Standard"
-
-# --- 4. CORE SIGNAL STACK ---
+# --- 3. THE CORE SIGNAL STACK ---
 def analyze_stock(ticker: str):
     try:
-        # A. Get Price (Finnhub)
-        price, change_pct, vol_proxy, is_sim = get_market_data(ticker)
+        price, change_pct, volatility, is_sim = get_market_data(ticker)
         
-        # B. Get Options (Polygon) or Fallback
-        real_iv, gex, opt_source, regime = get_options_data(ticker, price)
-        
-        # C. Decide which Volatility to use (Real vs Proxy)
-        if opt_source.startswith("Real"):
-            volatility_metric = real_iv * 100 # Convert to %
-            expected_move_pct = real_iv * 100
-        else:
-            volatility_metric = vol_proxy * 1.5
-            expected_move_pct = vol_proxy * 1.5
-            regime = "High Volatility" if vol_proxy > 4.0 else "Normal"
-
-        # D. Signal 1: Insider + Congress
         edge_score = 0
         catalyst = "None"
+        
         for bill in STATIC_LEGISLATION:
             if ticker in SECTOR_MAP.get(bill['sector'], []): 
                 edge_score += 40
@@ -198,38 +114,37 @@ def analyze_stock(ticker: str):
                 edge_score -= 30
                 catalyst = f"{trade['who']} SELL"
 
-        # E. Calculate Score
+        iv_proxy = volatility * 1.5
+        expected_move_pct = iv_proxy 
+        
+        regime = "Normal"
+        if iv_proxy > 4.0: regime = "High Volatility"
+        elif iv_proxy < 1.0: regime = "Low Volatility"
+
         total_score = edge_score + (change_pct * 5)
         
-        # Adjust for GEX Regime
-        if regime == "Positive GEX (Stabilizing)":
-            total_score = total_score * 0.8 # Harder to move
-            scenario = "Range Bound (Pinned)"
-        elif regime == "Negative GEX (Volatile)":
-            total_score = total_score * 1.2 # Accelerates moves
-            scenario = "Squeeze / Acceleration Risk"
+        if total_score > 50:
+            bias = "Bullish"
+            probability = 75 + min(total_score/10, 15)
+            scenario = "Breakout Likely"
+        elif total_score < -30:
+            bias = "Bearish"
+            probability = 60 + min(abs(total_score)/10, 20)
+            scenario = "Breakdown Likely"
         else:
-            # Proxy Logic
-            if total_score > 50: scenario = "Breakout Likely"
-            elif total_score < -30: scenario = "Breakdown Likely"
-            else: scenario = "Range Bound"
+            bias = "Neutral"
+            probability = 50
+            scenario = "Range Bound"
 
-        # Bias & Probability
-        bias = "Bullish" if total_score > 0 else "Bearish"
-        if abs(total_score) < 15: bias = "Neutral"
+        risk = "High" if volatility > 3.0 or "High" in regime else "Medium" if volatility > 1.5 else "Low"
         
-        probability = 50 + min(abs(total_score)/2, 40) # Cap at 90%
-
-        # Risk
-        risk = "High" if volatility_metric > 4.0 or "Volatile" in regime else "Medium" if volatility_metric > 2.0 else "Low"
-        
-        # Rating
         final_rating = "HOLD"
-        if bias == "Bullish" and probability > 70 and risk != "High": final_rating = "STRONG BUY"
+        if bias == "Bullish" and probability > 70: final_rating = "STRONG BUY"
         elif bias == "Bullish": final_rating = "BUY"
         elif bias == "Bearish" or risk == "High": final_rating = "SELL"
 
-        targets = f"${price*(1-expected_move_pct/100):.0f} - ${price*(1+expected_move_pct/100):.0f}"
+        target_up = price * (1 + (expected_move_pct/100))
+        target_down = price * (1 - (expected_move_pct/100))
 
         return { 
             "ticker": ticker, 
@@ -237,7 +152,6 @@ def analyze_stock(ticker: str):
             "raw_price": price,
             "final_score": final_rating, 
             "data_source": "FINNHUB_LIVE" if not is_sim else "BACKUP",
-            "options_source": opt_source,
             "trade_bias": bias,
             "probability": f"{probability:.0f}%",
             "scenario": scenario,
@@ -245,18 +159,21 @@ def analyze_stock(ticker: str):
             "risk_level": risk,
             "regime": regime,
             "key_catalyst": catalyst,
-            "targets": targets
+            "targets": f"${target_down:.0f} - ${target_up:.0f}"
         }
     except Exception as e:
         return { "ticker": ticker, "price": "N/A", "final_score": "HOLD", "error": str(e) }
 
-# --- SEARCH HELPER ---
+# --- SEARCH HELPER (NEW) ---
 def get_related_tickers(ticker):
+    # 1. Direct Peers
     if ticker in SECTOR_PEERS: return SECTOR_PEERS[ticker]
+    # 2. Sector Peers
     for sector, stocks in SECTOR_MAP.items():
         if ticker in stocks:
             peers = [s for s in stocks if s != ticker]
             return peers[:4]
+    # 3. Default Fallback
     return ["SPY", "QQQ", "IWM", "DIA"]
 
 # --- WORKER & ENDPOINTS ---
@@ -285,13 +202,19 @@ async def update_market_scanner():
 
 @app.get("/api/signals")
 def get_signals(ticker: str = "NVDA"):
+    # 1. Analyze Main Ticker
     main_res = analyze_stock(ticker.upper())
     results = [main_res]
+    
+    # 2. Find Peers
     peers = get_related_tickers(ticker.upper())
+    
+    # 3. Analyze Peers concurrently (Fast)
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futs = {executor.submit(analyze_stock, p): p for p in peers}
         for f in concurrent.futures.as_completed(futs): 
             results.append(f.result())
+            
     return results
 
 @app.get("/api/scanner")
