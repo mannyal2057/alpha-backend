@@ -4,15 +4,15 @@ import asyncio
 import concurrent.futures
 from datetime import datetime
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 
 # --- CONFIGURATION ---
-env_key = os.getenv("FMP_API_KEY", "")
-# Clean the key of any accidental spaces
-FMP_KEY = env_key.strip() if len(env_key) > 5 else "DEMO"
+# We now look for FINNHUB_API_KEY. 
+# If you haven't set it yet, it will default to DEMO (and likely fail/use backup).
+FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
 
 # --- CACHE ---
 SERVER_CACHE = {"buys": [], "cheap": [], "sells": [], "last_updated": None}
@@ -25,7 +25,7 @@ STATIC_LEGISLATION = [
     { "bill_id": "H.R. 8070", "bill_name": "Defense Auth Act", "update_date": TODAY, "bill_sponsor": "Rep. Rogers", "market_impact": "Direct Beneficiary: Military", "sector": "DEFENSE" }
 ]
 
-# --- FAIL-SAFE DATABASE ---
+# --- FAIL-SAFE DATABASE (Backup) ---
 FAILSAFE_DATA = { 
     "NVDA": [185.0, 1.4], "AI": [13.0, 1.8], "PLTR": [170.0, 1.5], "MSFT": [460.0, 0.9], 
     "AMD": [230.0, 1.4], "COIN": [310.0, 2.5], "LMT": [580.0, 0.5], "AVGO": [1050.0, 1.1],
@@ -46,36 +46,37 @@ class PriceRequest(BaseModel): tickers: list[str]
 # --- APP STARTUP ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Log key status for debugging
-    key_hash = FMP_KEY[:5] + "..." + FMP_KEY[-3:] if len(FMP_KEY) > 10 else "INVALID"
-    print(f"💎 SYSTEM BOOT: AlphaInsider v56.0 (Profile Endpoint Fix).")
-    print(f"🔑 ACTIVE KEY: {key_hash}")
+    key_hash = FINNHUB_KEY[:5] + "..." if len(FINNHUB_KEY) > 5 else "MISSING"
+    print(f"💎 SYSTEM BOOT: AlphaInsider v57.0 (Finnhub Integration).")
+    print(f"🔑 FINNHUB KEY: {key_hash}")
     asyncio.create_task(update_market_scanner())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="56.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="57.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- DATA ENGINE (PROFILE ENDPOINT) ---
-def get_live_data_fmp(ticker):
+# --- NEW DATA ENGINE (FINNHUB) ---
+def get_live_data_finnhub(ticker):
     try:
-        # THE FIX: Use '/profile/' instead of '/quote/'
-        # Profile data is included in the new Free Plan
-        url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_KEY}"
-        r = requests.get(url, timeout=3) 
+        # FINNHUB QUOTE ENDPOINT
+        url = f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_KEY}"
+        r = requests.get(url, timeout=3)
         
         if r.status_code == 200:
             data = r.json()
-            if data and len(data) > 0:
-                d = data[0]
-                # Profile returns: price, beta, volAvg, changes
-                return d.get('price', 0), d.get('volAvg', 5000000), d.get('changes', 0.0), False
+            # Finnhub returns: 'c' (current), 'd' (change), 'dp' (change percent)
+            # If 'c' is 0, the ticker might be invalid or permission denied
+            if data.get('c', 0) > 0:
+                return data.get('c'), 5000000, data.get('dp', 0.0), False
+        elif r.status_code == 429:
+            print(f"⚠️ [RATE LIMIT] Finnhub limit reached. Using Backup.")
         elif r.status_code == 403:
-            print(f"⚠️ [API BLOCK] 403 Forbidden for {ticker} (Check Plan)")
+            print(f"⚠️ [AUTH FAIL] Finnhub Key Invalid.")
+            
     except Exception as e: 
         print(f"⚠️ [API ERROR] {ticker}: {str(e)}")
     
-    # Fallback to Backup Data if API fails
+    # Fallback to Backup Data
     base = FAILSAFE_DATA.get(ticker, [100.0, 1.0])
     p = base[0] * random.uniform(0.99, 1.01)
     sim_change = base[1] * random.uniform(-1.5, 1.5)
@@ -83,11 +84,9 @@ def get_live_data_fmp(ticker):
 
 def analyze_stock(ticker: str):
     try:
-        price, vol, change, is_sim = get_live_data_fmp(ticker)
+        price, vol, change, is_sim = get_live_data_finnhub(ticker)
         
-        # TRUTH DETECTOR: Label the source
-        source = "LIVE_API (Profile)" if not is_sim else "BACKUP_DATA"
-
+        source = "FINNHUB_API" if not is_sim else "BACKUP_DATA"
         beta = FAILSAFE_DATA.get(ticker, [100, 1.0])[1] if is_sim else 1.2 
         
         risk_val = (beta * 20) + (abs(change) * 5)
@@ -123,26 +122,20 @@ def analyze_stock(ticker: str):
 # --- MANUAL KEY TESTER ---
 @app.get("/api/test_key")
 def manual_key_test(key: str):
-    masked = key[:4] + "****" if len(key) > 10 else "SHORT_KEY"
-    # TEST THE PROFILE ENDPOINT
-    url = f"https://financialmodelingprep.com/api/v3/profile/NVDA?apikey={key}"
+    masked = key[:4] + "..." if len(key) > 5 else "KEY"
+    url = f"https://finnhub.io/api/v1/quote?symbol=AAPL&token={key}"
     try:
         r = requests.get(url, timeout=4)
         status = "WORKING" if r.status_code == 200 else f"FAILED ({r.status_code})"
-        return { 
-            "tested_key": masked,
-            "endpoint": "profile",
-            "status": status, 
-            "response": r.json() if r.status_code == 200 else r.text 
-        }
+        return { "provider": "Finnhub", "key": masked, "status": status, "response": r.json() if r.status_code == 200 else r.text }
     except Exception as e: return { "status": "ERROR", "detail": str(e) }
 
-# --- STANDARD ENDPOINTS ---
+# --- ENDPOINTS ---
 @app.post("/api/prices")
 def get_batch_prices(req: PriceRequest):
     data = {}
     for t in req.tickers:
-        p, _, _, _ = get_live_data_fmp(t)
+        p, _, _, _ = get_live_data_finnhub(t)
         data[t] = p
     return data
 
@@ -153,13 +146,12 @@ def get_scanner_data(mode: str = "buys"): return SERVER_CACHE.get(mode, [])
 def get_signals(ticker: str = "NVDA", single: bool = False):
     return [analyze_stock(ticker.upper())]
 
-# --- BACKGROUND WORKER ---
 async def update_market_scanner():
     global ACTIVE_BILLS_CACHE
     while True:
         ACTIVE_BILLS_CACHE = STATIC_LEGISLATION
         results = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor: # Lower threads to respect rate limit
             futs = {executor.submit(analyze_stock, s): s for s in MARKET_UNIVERSE}
             for f in concurrent.futures.as_completed(futs): results.append(f.result())
         try:
