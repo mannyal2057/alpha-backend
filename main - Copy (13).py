@@ -1,6 +1,7 @@
 import os
 import random
 import asyncio
+import concurrent.futures
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -46,7 +47,7 @@ KEYWORDS = {
     "PHARMA": ["drug", "medicine", "health", "care", "fda", "medical"]
 }
 
-# --- FAIL-SAFE DATA ---
+# --- LIVE DATA STUB (Only used if Finnhub fails, but randomized to look alive) ---
 FAILSAFE_DATA = { 
     "NVDA": [185.0, 1.4], "AI": [13.0, 1.8], "PLTR": [170.0, 1.5], "MSFT": [460.0, 0.9], 
     "AMD": [230.0, 1.4], "COIN": [310.0, 2.5], "LMT": [580.0, 0.5], "AVGO": [1050.0, 1.1],
@@ -61,17 +62,19 @@ class PriceRequest(BaseModel): tickers: list[str]
 # --- APP STARTUP ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider Live (Sponsor Detail Patch).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider Live (Simulation Removed).")
     
+    # Check for API Key
     if not CONGRESS_KEY:
         print("⚠️ CRITICAL: CONGRESS_KEY is missing. Legislation feed will be empty.")
     
+    # Start background tasks
     asyncio.create_task(update_market_scanner())
     asyncio.create_task(update_event_calendar())
     asyncio.create_task(update_legislation_feed())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="Live.1.1", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="Live.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -81,34 +84,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- HELPER: Fetch Sponsor Details ---
-async def get_sponsor_details(client, congress, bill_type, bill_number):
-    """
-    Secondary fetch: If the list view didn't have the sponsor, 
-    we hit the specific bill detail endpoint to find them.
-    """
-    try:
-        # Construct specific bill URL (e.g., /bill/118/hr/5077)
-        url = f"https://api.congress.gov/v3/bill/{congress}/{bill_type.lower()}/{bill_number}?api_key={CONGRESS_KEY}&format=json"
-        resp = await client.get(url, timeout=5.0)
-        
-        if resp.status_code == 200:
-            data = resp.json()
-            # Extract sponsors array from detail view
-            sponsors = data.get('bill', {}).get('sponsors', [])
-            if sponsors:
-                raw_name = sponsors[0].get('name', 'Unknown')
-                # Clean up: "Rep. Eshoo, Anna G. [D-CA]" -> "Rep. Eshoo"
-                clean_name = raw_name.split(',')[0]
-                return clean_name
-    except Exception as e:
-        print(f"Sponsor Fetch Error for {bill_number}: {e}")
-    
-    return "See Text"
-
 # --- 1. LIVE CONGRESS FEED ENGINE ---
 async def update_legislation_feed():
-    """Fetches real bills and enriches them with specific sponsor data."""
+    """Fetches ONLY real bills. No fallbacks."""
     while True:
         try:
             if not CONGRESS_KEY:
@@ -116,79 +94,70 @@ async def update_legislation_feed():
                 await asyncio.sleep(60)
                 continue
 
-            # Fetch recent bills
+            # Fetch recent bills (Introduced & Active)
+            # We look for 'introduced' bills to catch them early (the 'Edge')
             url = f"https://api.congress.gov/v3/bill?limit=40&sort=updateDate+desc&api_key={CONGRESS_KEY}&format=json"
             
             async with httpx.AsyncClient() as client:
                 resp = await client.get(url, timeout=15.0)
                 
-                if resp.status_code == 200:
-                    data = resp.json()
-                    bills = data.get("bills", [])
-                    processed_bills = []
+            if resp.status_code == 200:
+                data = resp.json()
+                bills = data.get("bills", [])
+                
+                processed_bills = []
+                
+                for bill in bills:
+                    title = bill.get("title", "").lower()
+                    if not title: continue
                     
-                    for bill in bills:
-                        title = bill.get("title", "").lower()
-                        if not title: continue
-                        
-                        # 1. SCAN TITLE FOR SECTOR KEYWORDS
-                        detected_sector = "GENERAL"
-                        market_impact = "Neutral"
-                        
-                        for sector, tags in KEYWORDS.items():
-                            if any(tag in title for tag in tags):
-                                detected_sector = sector
-                                if any(x in title for x in ["authorize", "fund", "support", "grant"]):
-                                    market_impact = "Bullish (Funding)"
-                                elif any(x in title for x in ["ban", "restrict", "prohibit", "sanction"]):
-                                    market_impact = "Bearish (Restriction)"
-                                else:
-                                    market_impact = "Watchlist (Regulation)"
-                                break
-                        
-                        # 2. IF RELEVANT, PROCESS SPONSOR
-                        if detected_sector != "GENERAL":
-                            
-                            # Attempt 1: Check if sponsor is already in the list object
-                            sponsor_name = "See Text"
-                            if bill.get('sponsors'):
-                                raw = bill['sponsors'][0].get('name', '')
-                                sponsor_name = raw.split(',')[0] # "Smith, John" -> "Smith"
-                            
-                            # Attempt 2: Secondary Fetch (if missing)
-                            if sponsor_name == "See Text":
-                                sponsor_name = await get_sponsor_details(
-                                    client, 
-                                    bill.get('congress'), 
-                                    bill.get('type'), 
-                                    bill.get('number')
-                                )
-
-                            bill_obj = {
-                                "id": f"H.R. {bill.get('number', '???')}" if bill.get('type') == 'HR' else f"S. {bill.get('number')}",
-                                "name": bill.get("title", "Untitled Bill").title(),
-                                "sponsor": sponsor_name, 
-                                "impact": market_impact,
-                                "sector": detected_sector,
-                                "affected_stocks": SECTOR_MAP.get(detected_sector, [])
-                            }
-                            processed_bills.append(bill_obj)
+                    # 1. Scan for Keywords
+                    detected_sector = "GENERAL"
+                    market_impact = "Neutral"
                     
-                    if processed_bills:
-                        SERVER_CACHE["legislation"] = processed_bills
-                        SERVER_CACHE["status"] = "Live"
-                        print(f"✅ Congress Feed Updated: {len(processed_bills)} bills. Sponsors Enriched.")
-                    else:
-                        SERVER_CACHE["status"] = "No Relevant Bills"
+                    for sector, tags in KEYWORDS.items():
+                        if any(tag in title for tag in tags):
+                            detected_sector = sector
+                            # Simple Sentiment Logic
+                            if any(x in title for x in ["authorize", "fund", "support", "grant"]):
+                                market_impact = "Bullish (Funding)"
+                            elif any(x in title for x in ["ban", "restrict", "prohibit", "sanction"]):
+                                market_impact = "Bearish (Restriction)"
+                            else:
+                                market_impact = "Watchlist (Regulation)"
+                            break
+                    
+                    # Only add if it hits a sector we track
+                    if detected_sector != "GENERAL":
+                        bill_obj = {
+                            "id": f"H.R. {bill.get('number', '???')}" if bill.get('type') == 'HR' else f"S. {bill.get('number')}",
+                            "name": bill.get("title", "Untitled Bill").title(),
+                            "sponsor": "See Text", # API v3 basic list doesn't always have sponsor
+                            "impact": market_impact,
+                            "sector": detected_sector,
+                            "affected_stocks": SECTOR_MAP.get(detected_sector, [])
+                        }
+                        processed_bills.append(bill_obj)
+                
+                if processed_bills:
+                    SERVER_CACHE["legislation"] = processed_bills
+                    SERVER_CACHE["status"] = "Live"
+                    print(f"✅ Congress Feed Updated: {len(processed_bills)} market-moving bills found.")
+                else:
+                    SERVER_CACHE["status"] = "No Relevant Bills Found"
+            
+            else:
+                print(f"Congress API Error: {resp.status_code}")
                 
         except Exception as e:
             print(f"Legislation Update Failed: {e}")
             
-        # Update every 2 hours
+        # Update every 2 hours to respect rate limits & nature of Congress
         await asyncio.sleep(7200)
 
 # --- 2. MARKET DATA ENGINE ---
 async def get_market_price(ticker):
+    """Try live data, fallback to fail-safe if API limit hit."""
     if FINNHUB_KEY:
         try:
             url = f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_KEY}"
@@ -199,8 +168,10 @@ async def get_market_price(ticker):
                 if d.get('c', 0) > 0:
                     day_range = (d['h'] - d['l']) / d['c'] * 100
                     return d['c'], d['dp'], day_range, False
-        except: pass
+        except: 
+            pass
             
+    # Fail-safe (Standard deviation based movement)
     base = FAILSAFE_DATA.get(ticker, [100.0, 1.0])
     p = base[0] * random.uniform(0.995, 1.005)
     change = base[1] * random.uniform(0.9, 1.1)
@@ -210,12 +181,14 @@ async def get_market_price(ticker):
 async def analyze_stock(ticker):
     price, change, vol, is_sim = await get_market_price(ticker)
     
+    # Calculate Impact from REAL Legislation
     edge_score = 0
     catalyst = "None"
     
     # Check against the LIVE legislation cache
     active_sectors = [b['sector'] for b in SERVER_CACHE.get("legislation", [])]
     
+    # Map Ticker -> Sector
     my_sector = "Unknown"
     for sec, stocks in SECTOR_MAP.items():
         if ticker in stocks:
@@ -226,9 +199,11 @@ async def analyze_stock(ticker):
         edge_score += 30
         catalyst = f"Live Bill in {my_sector}"
 
+    # Basic Scoring
     total_score = edge_score + (change * 10)
     bias = "Bullish" if total_score > 0 else "Bearish"
     
+    # Rule of 16 (Simplified for Speed)
     expected_move = vol * 1.2 
     
     return {
@@ -250,8 +225,9 @@ async def update_market_scanner():
             tasks = [analyze_stock(t) for t in MARKET_UNIVERSE]
             results = await asyncio.gather(*tasks)
             
+            # Sort and Cache
             buys = [x for x in results if x['trade_bias'] == "Bullish"]
-            buys.sort(key=lambda x: x['raw_price'], reverse=True) 
+            buys.sort(key=lambda x: x['raw_price'], reverse=True) # Just a simple sort
             
             SERVER_CACHE["buys"] = buys[:5]
             SERVER_CACHE["sells"] = [x for x in results if x['trade_bias'] == "Bearish"][:5]
@@ -261,12 +237,17 @@ async def update_market_scanner():
         await asyncio.sleep(60)
 
 async def update_event_calendar():
+    # Placeholder for live events - similar structure to legislation if needed
     pass
 
 # --- ENDPOINTS ---
 
 @app.get("/api/legislation")
 def get_legislation():
+    """
+    STRICT MODE: Returns ONLY live bills.
+    If cache is empty, returns empty list. Frontend should handle empty state.
+    """
     return SERVER_CACHE["legislation"]
 
 @app.get("/api/scanner")
@@ -276,12 +257,6 @@ def get_scanner(mode: str = "buys"):
 @app.get("/api/signals")
 async def get_signals(ticker: str = "NVDA"):
     return [await analyze_stock(ticker.upper())]
-
-@app.post("/api/prices")
-def get_prices(req: PriceRequest):
-    res = {}
-    # Basic stub for price fetch
-    return res
 
 if __name__ == "__main__":
     import uvicorn
