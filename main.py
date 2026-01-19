@@ -74,51 +74,51 @@ class PriceRequest(BaseModel): tickers: list[str]
 # --- APP STARTUP ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v61.0 (Live Event Calendar).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v62.0 (News Sentiment).")
     asyncio.create_task(update_market_scanner())
-    asyncio.create_task(update_event_calendar()) # New Worker
+    asyncio.create_task(update_event_calendar())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="61.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="62.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- NEW ENGINE: EVENT CALENDAR ---
-async def update_event_calendar():
-    """Fetches IPOs, Earnings, and simulated Economic events"""
-    while True:
-        try:
-            # 1. IPO Calendar (Usually Free)
-            start = datetime.now().strftime("%Y-%m-%d")
-            end = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+# --- NEW ENGINE: NEWS SENTIMENT (Free Tier Hack) ---
+def get_news_sentiment(ticker):
+    """Fetches raw headlines and calculates simple sentiment"""
+    try:
+        # Get last 3 days of news
+        start = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+        end = datetime.now().strftime("%Y-%m-%d")
+        
+        url = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from={start}&to={end}&token={FINNHUB_KEY}"
+        r = requests.get(url, timeout=2)
+        
+        if r.status_code == 200:
+            news = r.json()
+            if not news: return "Neutral", 0
             
-            ipo_url = f"https://finnhub.io/api/v1/calendar/ipo?from={start}&to={end}&token={FINNHUB_KEY}"
-            r_ipo = requests.get(ipo_url)
-            if r_ipo.status_code == 200:
-                data = r_ipo.json()
-                if "ipoCalendar" in data:
-                    EVENT_CACHE["ipos"] = data["ipoCalendar"][:5] # Top 5
+            # DIY Sentiment Scoring
+            score = 0
+            # Keywords (Simple but effective)
+            bullish_words = ["growth", "beat", "record", "jump", "buy", "upgrade", "positive", "high", "gain", "strong"]
+            bearish_words = ["miss", "drop", "fall", "sell", "downgrade", "negative", "low", "loss", "weak", "sued"]
             
-            # 2. Earnings Calendar (Try/Except)
-            earn_url = f"https://finnhub.io/api/v1/calendar/earnings?from={start}&to={end}&token={FINNHUB_KEY}"
-            r_earn = requests.get(earn_url)
-            if r_earn.status_code == 200:
-                data = r_earn.json()
-                if "earningsCalendar" in data:
-                    EVENT_CACHE["earnings"] = data["earningsCalendar"][:5]
+            # Analyze last 5 headlines
+            headlines_analyzed = 0
+            for article in news[:5]:
+                headline = article.get('headline', '').lower()
+                for w in bullish_words:
+                    if w in headline: score += 1
+                for w in bearish_words:
+                    if w in headline: score -= 1
+                headlines_analyzed += 1
             
-            # 3. Economic Calendar (Simulator for Free Tier)
-            # Since real CPI/Fed dates are premium, we project likely dates
-            next_month = (datetime.now() + timedelta(days=30)).strftime("%B")
-            EVENT_CACHE["economic"] = [
-                {"event": "FOMC Rate Decision", "date": f"Est. {next_month} 15th", "impact": "High"},
-                {"event": "CPI Inflation Data", "date": f"Est. {next_month} 10th", "impact": "High"},
-                {"event": "Non-Farm Payrolls", "date": f"First Friday of {next_month}", "impact": "Medium"}
-            ]
-
-        except Exception as e:
-            print(f"Calendar Update Failed: {e}")
+            if score >= 1: return "Bullish", score
+            elif score <= -1: return "Bearish", score
+            else: return "Neutral", score
             
-        await asyncio.sleep(3600) # Update hourly
+    except: pass
+    return "Neutral", 0
 
 # --- DATA FEED ---
 def get_market_data(ticker):
@@ -168,6 +168,7 @@ def analyze_stock(ticker: str):
     try:
         price, change_pct, vol_proxy, is_sim = get_market_data(ticker)
         real_iv, gex, opt_source, regime = get_options_data(ticker, price)
+        news_sentiment, news_score = get_news_sentiment(ticker) # <--- NEW INPUT
         
         if opt_source.startswith("Real"):
             volatility_metric = real_iv * 100
@@ -180,21 +181,21 @@ def analyze_stock(ticker: str):
         edge_score = 0
         catalyst = "None"
         
-        # 1. Check Legislation
+        # 1. Legislation
         for bill in STATIC_LEGISLATION:
             if ticker in SECTOR_MAP.get(bill['sector'], []): 
                 edge_score += 40
                 catalyst = f"Bill: {bill['bill_name']}"
+        
+        # 2. News (New)
+        if news_sentiment == "Bullish": 
+            edge_score += 15
+            if catalyst == "None": catalyst = "Positive News Cycle"
+        elif news_sentiment == "Bearish": 
+            edge_score -= 15
+            if catalyst == "None": catalyst = "Negative Headlines"
 
-        # 2. Check Event Calendar (New)
-        # If stock is in earnings list, boost Volatility Risk
-        for earn in EVENT_CACHE["earnings"]:
-            if earn.get('symbol') == ticker:
-                regime = "Earnings Volatility"
-                expected_move_pct *= 1.5
-                catalyst = f"Earnings: {earn.get('date', 'Soon')}"
-
-        # 3. Check Insider
+        # 3. Insider
         if ticker in INSIDER_TRADES:
             trade = INSIDER_TRADES[ticker]
             if trade['action'] == "BUY":
@@ -209,7 +210,7 @@ def analyze_stock(ticker: str):
         if regime == "Positive GEX (Stabilizing)":
             total_score *= 0.8
             scenario = "Range Bound (Pinned)"
-        elif regime == "Negative GEX (Volatile)" or regime == "Earnings Volatility":
+        elif regime == "Negative GEX (Volatile)":
             total_score *= 1.2
             scenario = "Squeeze / Acceleration Risk"
         else:
@@ -236,7 +237,7 @@ def analyze_stock(ticker: str):
             "raw_price": price,
             "final_score": final_rating, 
             "data_source": "FINNHUB_LIVE" if not is_sim else "BACKUP",
-            "options_source": opt_source,
+            "news_sentiment": news_sentiment, # <--- NEW OUTPUT
             "trade_bias": bias,
             "probability": f"{probability:.0f}%",
             "scenario": scenario,
@@ -254,6 +255,32 @@ def get_related_tickers(ticker):
     for sector, stocks in SECTOR_MAP.items():
         if ticker in stocks: return [s for s in stocks if s != ticker][:4]
     return ["SPY", "QQQ", "IWM", "DIA"]
+
+async def update_event_calendar():
+    while True:
+        try:
+            start = datetime.now().strftime("%Y-%m-%d")
+            end = (datetime.now() + timedelta(days=7)).strftime("%Y-%m-%d")
+            
+            ipo_url = f"https://finnhub.io/api/v1/calendar/ipo?from={start}&to={end}&token={FINNHUB_KEY}"
+            r_ipo = requests.get(ipo_url)
+            if r_ipo.status_code == 200:
+                data = r_ipo.json()
+                if "ipoCalendar" in data: EVENT_CACHE["ipos"] = data["ipoCalendar"][:5]
+            
+            earn_url = f"https://finnhub.io/api/v1/calendar/earnings?from={start}&to={end}&token={FINNHUB_KEY}"
+            r_earn = requests.get(earn_url)
+            if r_earn.status_code == 200:
+                data = r_earn.json()
+                if "earningsCalendar" in data: EVENT_CACHE["earnings"] = data["earningsCalendar"][:5]
+            
+            next_month = (datetime.now() + timedelta(days=30)).strftime("%B")
+            EVENT_CACHE["economic"] = [
+                {"event": "FOMC Rate Decision", "date": f"Est. {next_month} 15th", "impact": "High"},
+                {"event": "CPI Inflation Data", "date": f"Est. {next_month} 10th", "impact": "High"}
+            ]
+        except: pass
+        await asyncio.sleep(3600)
 
 async def update_market_scanner():
     while True:
@@ -288,10 +315,8 @@ def get_signals(ticker: str = "NVDA"):
 
 @app.get("/api/scanner")
 def get_scanner(mode: str = "buys"): return SERVER_CACHE.get(mode, [])
-
-@app.get("/api/events") # NEW ENDPOINT
+@app.get("/api/events")
 def get_events(): return EVENT_CACHE
-
 @app.post("/api/prices")
 def get_prices(req: PriceRequest):
     res = {}
