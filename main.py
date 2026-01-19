@@ -61,7 +61,7 @@ class PriceRequest(BaseModel): tickers: list[str]
 # --- APP STARTUP ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider Live (Sponsor Detail Patch).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider Live (Robust Sponsor Fix).")
     
     if not CONGRESS_KEY:
         print("⚠️ CRITICAL: CONGRESS_KEY is missing. Legislation feed will be empty.")
@@ -71,7 +71,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(update_legislation_feed())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="Live.1.1", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="Live.1.2", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -84,23 +84,42 @@ app.add_middleware(
 # --- HELPER: Fetch Sponsor Details ---
 async def get_sponsor_details(client, congress, bill_type, bill_number):
     """
-    Secondary fetch: If the list view didn't have the sponsor, 
-    we hit the specific bill detail endpoint to find them.
+    Secondary fetch with robust fallbacks for missing name fields.
     """
     try:
-        # Construct specific bill URL (e.g., /bill/118/hr/5077)
+        # Construct specific bill URL
         url = f"https://api.congress.gov/v3/bill/{congress}/{bill_type.lower()}/{bill_number}?api_key={CONGRESS_KEY}&format=json"
         resp = await client.get(url, timeout=5.0)
         
         if resp.status_code == 200:
             data = resp.json()
-            # Extract sponsors array from detail view
             sponsors = data.get('bill', {}).get('sponsors', [])
+            
             if sponsors:
-                raw_name = sponsors[0].get('name', 'Unknown')
-                # Clean up: "Rep. Eshoo, Anna G. [D-CA]" -> "Rep. Eshoo"
-                clean_name = raw_name.split(',')[0]
-                return clean_name
+                sponsor = sponsors[0]
+                # Priority 1: 'name' (e.g. "Rep. Eshoo, Anna G. [D-CA]")
+                raw_name = sponsor.get('name')
+                
+                # Priority 2: 'fullName'
+                if not raw_name:
+                    raw_name = sponsor.get('fullName')
+                
+                # Priority 3: 'firstName' + 'lastName'
+                if not raw_name and sponsor.get('lastName'):
+                    raw_name = f"{sponsor.get('firstName', '')} {sponsor.get('lastName')}"
+                
+                if raw_name:
+                    # Clean up: "Rep. Eshoo, Anna G. [D-CA]" -> "Rep. Eshoo"
+                    clean_name = raw_name.split(',')[0]
+                    # Add 'Rep.' or 'Sen.' if missing and we know the type
+                    if "Rep" not in clean_name and "Sen" not in clean_name:
+                        prefix = "Rep." if "hr" in bill_type.lower() else "Sen."
+                        clean_name = f"{prefix} {clean_name}"
+                        
+                    return clean_name
+                else:
+                    print(f"⚠️ Sponsor found but no name field for {bill_number}: {sponsor}")
+                    
     except Exception as e:
         print(f"Sponsor Fetch Error for {bill_number}: {e}")
     
@@ -149,14 +168,16 @@ async def update_legislation_feed():
                         # 2. IF RELEVANT, PROCESS SPONSOR
                         if detected_sector != "GENERAL":
                             
-                            # Attempt 1: Check if sponsor is already in the list object
                             sponsor_name = "See Text"
+                            
+                            # Attempt 1: Check list object (Quick check)
                             if bill.get('sponsors'):
                                 raw = bill['sponsors'][0].get('name', '')
-                                sponsor_name = raw.split(',')[0] # "Smith, John" -> "Smith"
+                                if raw:
+                                    sponsor_name = raw.split(',')[0]
                             
-                            # Attempt 2: Secondary Fetch (if missing)
-                            if sponsor_name == "See Text":
+                            # Attempt 2: Secondary Fetch (If Attempt 1 failed or returned empty)
+                            if sponsor_name == "See Text" or sponsor_name == "":
                                 sponsor_name = await get_sponsor_details(
                                     client, 
                                     bill.get('congress'), 
@@ -280,7 +301,6 @@ async def get_signals(ticker: str = "NVDA"):
 @app.post("/api/prices")
 def get_prices(req: PriceRequest):
     res = {}
-    # Basic stub for price fetch
     return res
 
 if __name__ == "__main__":
