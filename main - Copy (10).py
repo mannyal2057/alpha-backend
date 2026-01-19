@@ -24,35 +24,12 @@ POLYGON_KEY = os.getenv("POLYGON_API_KEY", "").strip()
 SERVER_CACHE = {"buys": [], "cheap": [], "sells": [], "last_updated": None}
 EVENT_CACHE = {"ipos": [], "earnings": [], "economic": []}
 
-# --- 1. CORE DATA ---
+# --- 1. CORE DATA (The Data You Requested) ---
 TODAY = datetime.now().strftime("%Y-%m-%d")
-
-# UPDATED: Added 'bill_sponsor' to support the frontend display
 STATIC_LEGISLATION = [
-    { 
-        "bill_id": "H.R. 5077", 
-        "bill_name": "CREATE AI Act", 
-        "bill_sponsor": "Rep. Eshoo", 
-        "market_impact": "Bullish", 
-        "sector": "AI", 
-        "conviction": 85 
-    },
-    { 
-        "bill_id": "H.R. 8070", 
-        "bill_name": "Defense Auth Act", 
-        "bill_sponsor": "Rep. Rogers", 
-        "market_impact": "Bullish", 
-        "sector": "DEFENSE", 
-        "conviction": 90 
-    },
-    { 
-        "bill_id": "H.R. 4763", 
-        "bill_name": "Crypto Clarity Act", 
-        "bill_sponsor": "Rep. Emmer", 
-        "market_impact": "Bullish", 
-        "sector": "CRYPTO", 
-        "conviction": 80 
-    }
+    { "bill_id": "H.R. 5077", "bill_name": "CREATE AI Act", "market_impact": "Bullish", "sector": "AI", "conviction": 85 },
+    { "bill_id": "H.R. 8070", "bill_name": "Defense Auth Act", "market_impact": "Bullish", "sector": "DEFENSE", "conviction": 90 },
+    { "bill_id": "H.R. 4763", "bill_name": "Crypto Clarity Act", "market_impact": "Bullish", "sector": "CRYPTO", "conviction": 80 }
 ]
 
 INSIDER_TRADES = {
@@ -98,12 +75,12 @@ class PriceRequest(BaseModel): tickers: list[str]
 # --- APP STARTUP ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v64.0 (Math Fix + Legislation Patch).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v63.0 (Legislation Page Fix).")
     asyncio.create_task(update_market_scanner())
     asyncio.create_task(update_event_calendar())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="64.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="63.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 # --- NEW ENGINE: NEWS SENTIMENT ---
@@ -181,12 +158,9 @@ def analyze_stock(ticker: str):
         real_iv, gex, opt_source, regime = get_options_data(ticker, price)
         news_sentiment, news_score = get_news_sentiment(ticker) 
         
-        # --- FIX: Rule of 16 for Realistic Expected Moves ---
         if opt_source.startswith("Real"):
             volatility_metric = real_iv * 100
-            # FIX: Divide Annual IV by 16 to get Daily Expected Move
-            daily_move_pct = (real_iv / 16) * 100 
-            expected_move_pct = daily_move_pct
+            expected_move_pct = real_iv * 100
         else:
             volatility_metric = vol_proxy * 1.5
             expected_move_pct = vol_proxy * 1.5
@@ -243,7 +217,7 @@ def analyze_stock(ticker: str):
         elif bias == "Bullish": final_rating = "BUY"
         elif bias == "Bearish" or risk == "High": final_rating = "SELL"
 
-        targets = f"${price*(1-expected_move_pct/100):.2f} - ${price*(1+expected_move_pct/100):.2f}"
+        targets = f"${price*(1-expected_move_pct/100):.0f} - ${price*(1+expected_move_pct/100):.0f}"
 
         return { 
             "ticker": ticker, 
@@ -255,7 +229,7 @@ def analyze_stock(ticker: str):
             "trade_bias": bias,
             "probability": f"{probability:.0f}%",
             "scenario": scenario,
-            "expected_move": f"+/- {expected_move_pct:.2f}%",
+            "expected_move": f"+/- {expected_move_pct:.1f}%",
             "risk_level": risk,
             "regime": regime,
             "key_catalyst": catalyst,
@@ -331,20 +305,9 @@ def get_scanner(mode: str = "buys"): return SERVER_CACHE.get(mode, [])
 @app.get("/api/events")
 def get_events(): return EVENT_CACHE
 
-# --- FIX: Updated Legislation Endpoint ---
-@app.get("/api/legislation")
+@app.get("/api/legislation") # <--- THE WATCHLIST DATA SOURCE
 def get_legislation():
-    # enhance the static data with live "affected_stocks" lists
-    enhanced_legislation = []
-    
-    for bill in STATIC_LEGISLATION:
-        bill_data = bill.copy()
-        sector = bill.get("sector")
-        affected = SECTOR_MAP.get(sector, [])
-        bill_data["affected_stocks"] = affected
-        enhanced_legislation.append(bill_data)
-        
-    return enhanced_legislation
+    return STATIC_LEGISLATION
 
 @app.post("/api/prices")
 def get_prices(req: PriceRequest):
