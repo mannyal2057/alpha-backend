@@ -19,40 +19,47 @@ except ImportError:
 # --- CONFIGURATION ---
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
 POLYGON_KEY = os.getenv("POLYGON_API_KEY", "").strip()
-CONGRESS_KEY = os.getenv("CONGRESS_KEY", "").strip()  # <--- NEW KEY
 
 # --- CACHE ---
-# We cache legislation for 1 hour to avoid hitting Congress API limits
-SERVER_CACHE = {
-    "buys": [], 
-    "cheap": [], 
-    "sells": [], 
-    "legislation": [], 
-    "last_leg_update": None
-}
+SERVER_CACHE = {"buys": [], "cheap": [], "sells": [], "last_updated": None}
 EVENT_CACHE = {"ipos": [], "earnings": [], "economic": []}
 
-# --- 1. SECTOR MAPPING (The Brain of the Auto-Tagger) ---
-# This logic converts boring government titles into trading signals.
-SECTOR_MAP = { 
-    "AI": ["NVDA", "AMD", "MSFT", "GOOGL", "PLTR", "AI"], 
-    "CRYPTO": ["COIN", "HOOD", "MARA", "MSTR"], 
-    "DEFENSE": ["LMT", "RTX", "BA", "NOC", "GD"], 
-    "EV": ["TSLA", "RIVN", "F", "GM", "LCID"], 
-    "FINANCE": ["JPM", "BAC", "SOFI", "GS"],
-    "ENERGY": ["XOM", "CVX", "OXY", "KMI"],
-    "PHARMA": ["PFE", "MRK", "LLY", "JNJ"]
-}
+# --- 1. CORE DATA ---
+TODAY = datetime.now().strftime("%Y-%m-%d")
 
-# Keywords to look for in bill titles
-KEYWORDS = {
-    "AI": ["artificial intelligence", "computational", "cyber", "technology", "chips", "semiconductor"],
-    "CRYPTO": ["crypto", "digital asset", "blockchain", "bitcoin", "stablecoin", "ledger"],
-    "DEFENSE": ["defense", "military", "weapon", "national security", "armed forces", "ukraine", "israel"],
-    "EV": ["electric vehicle", "battery", "charging", "emission", "clean energy", "climate"],
-    "FINANCE": ["bank", "reserve", "inflation", "monetary", "financial", "sec ", "investment"],
-    "ENERGY": ["oil", "gas", "pipeline", "drilling", "energy", "carbon"],
-    "PHARMA": ["drug", "medicine", "health", "care", "fda", "medical"]
+# UPDATED: Includes 'bill_sponsor' for the frontend
+STATIC_LEGISLATION = [
+    { 
+        "bill_id": "H.R. 5077", 
+        "bill_name": "CREATE AI Act", 
+        "bill_sponsor": "Rep. Eshoo", 
+        "market_impact": "Bullish", 
+        "sector": "AI", 
+        "conviction": 85 
+    },
+    { 
+        "bill_id": "H.R. 8070", 
+        "bill_name": "Defense Auth Act", 
+        "bill_sponsor": "Rep. Rogers", 
+        "market_impact": "Bullish", 
+        "sector": "DEFENSE", 
+        "conviction": 90 
+    },
+    { 
+        "bill_id": "H.R. 4763", 
+        "bill_name": "Crypto Clarity Act", 
+        "bill_sponsor": "Rep. Emmer", 
+        "market_impact": "Bullish", 
+        "sector": "CRYPTO", 
+        "conviction": 80 
+    }
+]
+
+INSIDER_TRADES = {
+    "NVDA": {"who": "Rep. Pelosi", "action": "BUY", "size": "Huge"},
+    "PLTR": {"who": "Rep. Green", "action": "BUY", "size": "Medium"},
+    "COIN": {"who": "Rep. Fallon", "action": "BUY", "size": "Large"},
+    "TSLA": {"who": "Sen. Tuberville", "action": "SELL", "size": "Medium"}
 }
 
 # --- FAIL-SAFE DATA ---
@@ -84,12 +91,16 @@ SECTOR_PEERS = {
     "PFE":  ["MRK", "LLY", "JNJ", "ABBV"],
     "JPM":  ["BAC", "C", "WFC", "GS"]
 }
-INSIDER_TRADES = {
-    "NVDA": {"who": "Rep. Pelosi", "action": "BUY", "size": "Huge"},
-    "PLTR": {"who": "Rep. Green", "action": "BUY", "size": "Medium"},
-    "COIN": {"who": "Rep. Fallon", "action": "BUY", "size": "Large"},
-    "TSLA": {"who": "Sen. Tuberville", "action": "SELL", "size": "Medium"}
+
+# Used to map legislation to specific tickers
+SECTOR_MAP = { 
+    "AI": ["NVDA", "AMD", "MSFT", "GOOGL", "PLTR", "AI"], 
+    "CRYPTO": ["COIN", "HOOD"], 
+    "DEFENSE": ["LMT", "RTX", "BA"], 
+    "EV": ["TSLA", "RIVN", "F", "GM"], 
+    "FINANCE": ["JPM", "BAC", "SOFI"] 
 }
+
 MARKET_UNIVERSE = list(FAILSAFE_DATA.keys())
 
 class PriceRequest(BaseModel): tickers: list[str]
@@ -97,13 +108,12 @@ class PriceRequest(BaseModel): tickers: list[str]
 # --- APP STARTUP ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v66.0 (Live Congress Feed).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v65.0 (Optimization Complete).")
     asyncio.create_task(update_market_scanner())
     asyncio.create_task(update_event_calendar())
-    asyncio.create_task(update_legislation_feed()) # <--- NEW TASK
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="66.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="65.0", lifespan=lifespan)
 
 # CORS: Allow all for development flexibility
 app.add_middleware(
@@ -113,71 +123,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# --- NEW: LIVE CONGRESS FEED ENGINE ---
-async def update_legislation_feed():
-    """Fetches real-time bills from Congress.gov and maps them to market sectors."""
-    while True:
-        try:
-            if not CONGRESS_KEY:
-                print("⚠️ No Congress Key found. Using static backup.")
-                await asyncio.sleep(3600)
-                continue
-
-            # Fetch recent bills (introduced, sorted by date)
-            url = f"https://api.congress.gov/v3/bill?limit=20&sort=updateDate+desc&api_key={CONGRESS_KEY}&format=json"
-            async with aiohttp.ClientSession() as session: # Need to import aiohttp or use requests
-                 r = requests.get(url, timeout=10) # Using requests for simplicity in this snippet
-            
-            if r.status_code == 200:
-                data = r.json()
-                bills = data.get("bills", [])
-                
-                processed_bills = []
-                
-                for bill in bills:
-                    title = bill.get("title", "").lower()
-                    if not title: continue
-                    
-                    # 1. SCAN TITLE FOR SECTOR KEYWORDS
-                    detected_sector = "GENERAL"
-                    market_impact = "Neutral"
-                    
-                    for sector, tags in KEYWORDS.items():
-                        if any(tag in title for tag in tags):
-                            detected_sector = sector
-                            # Heuristic: Most regulation is initially seen as bearish, 
-                            # but funding/spending is bullish.
-                            if "authorize" in title or "appropriat" in title or "fund" in title or "support" in title:
-                                market_impact = "Bullish (Funding)"
-                            elif "restrict" in title or "ban" in title or "prohibit" in title:
-                                market_impact = "Bearish (Restriction)"
-                            else:
-                                market_impact = "Watchlist (Regulation)"
-                            break
-                    
-                    # Only keep bills that matched a sector (High relevance)
-                    if detected_sector != "GENERAL":
-                        bill_obj = {
-                            "bill_id": f"H.R. {bill.get('number', '???')}" if bill.get('type') == 'HR' else f"S. {bill.get('number')}",
-                            "bill_name": bill.get("title", "Untitled Bill"),
-                            "bill_sponsor": "See Text", # API v3 basic endpoint doesn't always have sponsor in list view
-                            "market_impact": market_impact,
-                            "sector": detected_sector,
-                            "affected_stocks": SECTOR_MAP.get(detected_sector, [])
-                        }
-                        processed_bills.append(bill_obj)
-                
-                # If we found relevant bills, update cache
-                if processed_bills:
-                    SERVER_CACHE["legislation"] = processed_bills[:10] # Top 10 most relevant
-                    print(f"✅ Updated Legislation Feed: {len(processed_bills)} relevant bills found.")
-            
-        except Exception as e:
-            print(f"Legislation Update Error: {e}")
-        
-        # Update every 4 hours (Congress doesn't move that fast)
-        await asyncio.sleep(14400)
 
 # --- NEW ENGINE: NEWS SENTIMENT ---
 def get_news_sentiment(ticker):
@@ -254,10 +199,12 @@ def analyze_stock(ticker: str):
         real_iv, gex, opt_source, regime = get_options_data(ticker, price)
         news_sentiment, news_score = get_news_sentiment(ticker) 
         
+        # --- CALCULATION FIX: Rule of 16 ---
         if opt_source.startswith("Real"):
-            volatility_metric = real_iv * 100
+            # real_iv is annual (e.g. 0.45), divide by 16 for daily move
             daily_move_pct = (real_iv / 16) * 100 
             expected_move_pct = daily_move_pct 
+            volatility_metric = real_iv * 100 # Keep raw IV for risk scoring
         else:
             volatility_metric = vol_proxy * 1.5
             expected_move_pct = vol_proxy * 1.5
@@ -266,14 +213,12 @@ def analyze_stock(ticker: str):
         edge_score = 0
         catalyst = "None"
         
-        # 1. Legislation (Use Live Cache)
-        # We check if this stock is in a sector affected by ANY active bill
-        relevant_sectors = [b['sector'] for b in SERVER_CACHE.get("legislation", [])]
-        for sector, stocks in SECTOR_MAP.items():
-            if ticker in stocks and sector in relevant_sectors:
-                 edge_score += 25
-                 catalyst = f"Sector Bill: {sector} Legislation"
-
+        # 1. Legislation
+        for bill in STATIC_LEGISLATION:
+            if ticker in SECTOR_MAP.get(bill['sector'], []): 
+                edge_score += 40
+                catalyst = f"Bill: {bill['bill_name']}"
+        
         # 2. News
         if news_sentiment == "Bullish": 
             edge_score += 15
@@ -404,20 +349,21 @@ def get_scanner(mode: str = "buys"): return SERVER_CACHE.get(mode, [])
 @app.get("/api/events")
 def get_events(): return EVENT_CACHE
 
-# --- LEGISLATION ENDPOINT (NOW LIVE) ---
+# --- LEGISLATION ENDPOINT (FIXED) ---
 @app.get("/api/legislation")
 def get_legislation():
-    # Return live cached bills. If empty (first boot), return static fallback.
-    if SERVER_CACHE["legislation"]:
-        return SERVER_CACHE["legislation"]
+    # enhance the static data with live "affected_stocks" lists
+    enhanced_legislation = []
     
-    # Fallback to static if API Key is missing or cache warming up
-    static_backup = [
-        { "bill_id": "H.R. 5077", "bill_name": "CREATE AI Act", "bill_sponsor": "Rep. Eshoo", "market_impact": "Bullish", "sector": "AI", "affected_stocks": SECTOR_MAP["AI"] },
-        { "bill_id": "H.R. 8070", "bill_name": "Defense Auth Act", "bill_sponsor": "Rep. Rogers", "market_impact": "Bullish", "sector": "DEFENSE", "affected_stocks": SECTOR_MAP["DEFENSE"] },
-        { "bill_id": "H.R. 4763", "bill_name": "Crypto Clarity Act", "bill_sponsor": "Rep. Emmer", "market_impact": "Bullish", "sector": "CRYPTO", "affected_stocks": SECTOR_MAP["CRYPTO"] }
-    ]
-    return static_backup
+    for bill in STATIC_LEGISLATION:
+        bill_data = bill.copy()
+        sector = bill.get("sector")
+        # Lookup stocks in the map, default to empty list if sector missing
+        affected = SECTOR_MAP.get(sector, [])
+        bill_data["affected_stocks"] = affected
+        enhanced_legislation.append(bill_data)
+        
+    return enhanced_legislation
 
 @app.post("/api/prices")
 def get_prices(req: PriceRequest):
