@@ -1,7 +1,8 @@
 fastapi
 uvicorn
-requests
-pandas
 pydantic
-python-multipart
+requests
+httpx
 polygon-api-client
+finnhub-python
+python-dotenv
