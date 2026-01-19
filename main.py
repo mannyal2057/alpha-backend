@@ -46,20 +46,19 @@ MARKET_UNIVERSE = list(FAILSAFE_DATA.keys())
 
 class PriceRequest(BaseModel): tickers: list[str]
 
-# --- APP INITIALIZATION (Moved to Top) ---
+# --- APP STARTUP ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider v49.1 (Order Fix).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v50.0 (Final Polish).")
     asyncio.create_task(update_market_scanner())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="49.1", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="50.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- FAST DATA ENGINE ---
+# --- DATA ENGINE ---
 def get_live_data_fmp(ticker):
     try:
-        # TIMEOUT SET TO 2 SECONDS (Prevents Lag)
         url = f"https://financialmodelingprep.com/api/v3/quote/{ticker}?apikey={FMP_KEY}"
         r = requests.get(url, timeout=2) 
         if r.status_code == 200:
@@ -69,7 +68,6 @@ def get_live_data_fmp(ticker):
                 return d.get('price', 0), d.get('volume', 0), d.get('changesPercentage', 0), False
     except: pass
     
-    # Fast Fallback
     base = FAILSAFE_DATA.get(ticker, [100.0, 1.0])
     p = base[0] * random.uniform(0.99, 1.01)
     sim_change = base[1] * random.uniform(-1.5, 1.5)
@@ -79,12 +77,10 @@ def analyze_stock(ticker: str):
     try:
         price, vol, change, is_sim = get_live_data_fmp(ticker)
         
-        # Risk Calculation
         beta = FAILSAFE_DATA.get(ticker, [100, 1.0])[1] if is_sim else (1.8 if abs(change) > 2.5 else 0.8)
         risk_val = (beta * 20) + (abs(change) * 5)
         risk = "High" if risk_val > 45 else "Medium" if risk_val > 25 else "Low"
 
-        # Legislation
         leg_score = 50
         leg = None
         for bill in ACTIVE_BILLS_CACHE:
@@ -93,7 +89,7 @@ def analyze_stock(ticker: str):
         
         if ticker in STATIC_TRADES: leg_score += 20
 
-        # Rating
+        # Scoring
         if leg_score >= 80 and risk == "Low": rating = "STRONG BUY"
         elif leg_score >= 60: rating = "BUY"
         elif risk == "High": rating = "SELL"
@@ -111,6 +107,45 @@ def analyze_stock(ticker: str):
             "corporate_activity": f"Change {change:.2f}%"
         }
     except: return { "ticker": ticker, "price": "N/A", "final_score": "HOLD", "raw_price": 0 }
+
+# --- SCANNER LOGIC ---
+async def update_market_scanner():
+    global ACTIVE_BILLS_CACHE
+    while True:
+        ACTIVE_BILLS_CACHE = STATIC_LEGISLATION
+        results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            futs = {executor.submit(analyze_stock, s): s for s in MARKET_UNIVERSE}
+            for f in concurrent.futures.as_completed(futs): results.append(f.result())
+        try:
+            # 1. TOP BUYS (Must be BUY/STRONG BUY)
+            buys = [x for x in results if x.get('final_score') in ["STRONG BUY", "BUY"]]
+            buys.sort(key=lambda x: x.get('final_score') == "STRONG BUY", reverse=True)
+            SERVER_CACHE["buys"] = buys[:5]
+            
+            # 2. CHEAP PICKS (Must be <$50 AND NOT SELL)
+            cheap = [x for x in results if x.get('raw_price', 999) < 50 and x.get('final_score') != "SELL"]
+            cheap.sort(key=lambda x: x.get('final_score') == "STRONG BUY", reverse=True)
+            SERVER_CACHE["cheap"] = cheap[:5]
+            
+            # 3. AVOID (High Risk or Sell) - EXCLUDE BUYS
+            # Remove any stock that is already in the 'buys' list
+            buy_tickers = [b['ticker'] for b in SERVER_CACHE["buys"]]
+            
+            sells = [x for x in results if (x.get('final_score') == "SELL" or x.get('risk_level') == "High")]
+            sells = [s for s in sells if s['ticker'] not in buy_tickers] # <--- FIX OVERLAP
+            
+            if len(sells) < 3:
+                all_sorted = sorted(results, key=lambda x: float(x.get('expected_move', '0').split(' ')[1].replace('%','')), reverse=True)
+                # Ensure fallback sells aren't in buys either
+                sells = [s for s in all_sorted if s['ticker'] not in buy_tickers][:5]
+            else:
+                sells.sort(key=lambda x: x.get('risk_level') == "High", reverse=True)
+            
+            SERVER_CACHE["sells"] = sells[:5]
+            
+        except: pass
+        await asyncio.sleep(900)
 
 # --- ENDPOINTS ---
 @app.get("/api/debug")
@@ -135,34 +170,6 @@ def get_scanner_data(mode: str = "buys"): return SERVER_CACHE.get(mode, [])
 @app.get("/api/signals")
 def get_signals(ticker: str = "NVDA", single: bool = False):
     return [analyze_stock(ticker.upper())]
-
-# --- SERVER WORKER ---
-async def update_market_scanner():
-    global ACTIVE_BILLS_CACHE
-    while True:
-        ACTIVE_BILLS_CACHE = STATIC_LEGISLATION
-        results = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            futs = {executor.submit(analyze_stock, s): s for s in MARKET_UNIVERSE}
-            for f in concurrent.futures.as_completed(futs): results.append(f.result())
-        try:
-            # Buys
-            buys = [x for x in results if x.get('final_score') in ["STRONG BUY", "BUY"]]
-            buys.sort(key=lambda x: x.get('final_score') == "STRONG BUY", reverse=True)
-            SERVER_CACHE["buys"] = buys[:5]
-            # Cheap
-            cheap = [x for x in results if x.get('raw_price', 999) < 50]
-            cheap.sort(key=lambda x: x.get('final_score') == "STRONG BUY", reverse=True)
-            SERVER_CACHE["cheap"] = cheap[:5]
-            # Avoid
-            sells = [x for x in results if x.get('final_score') == "SELL" or x.get('risk_level') == "High"]
-            if len(sells) < 3:
-                all_sorted = sorted(results, key=lambda x: float(x.get('expected_move', '0').split(' ')[1].replace('%','')), reverse=True)
-                sells = all_sorted[:5]
-            else: sells.sort(key=lambda x: x.get('risk_level') == "High", reverse=True)
-            SERVER_CACHE["sells"] = sells[:5]
-        except: pass
-        await asyncio.sleep(900)
 
 if __name__ == "__main__":
     import uvicorn
