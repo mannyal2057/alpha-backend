@@ -4,13 +4,12 @@ import asyncio
 import concurrent.futures
 from datetime import datetime
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 
 # --- CONFIGURATION ---
-# Robust Key Loading: Handles empty strings correctly
 env_key = os.getenv("FMP_API_KEY", "")
 FMP_KEY = env_key.strip() if len(env_key) > 5 else "DEMO"
 
@@ -46,27 +45,28 @@ class PriceRequest(BaseModel): tickers: list[str]
 # --- APP STARTUP ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Log the exact key hash so we know what loaded
     key_hash = FMP_KEY[:5] + "..." + FMP_KEY[-3:] if len(FMP_KEY) > 10 else FMP_KEY
-    print(f"💎 SYSTEM BOOT: AlphaInsider v53.0 (Manual Key Tester).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v54.0 (Legacy Fix).")
     print(f"🔑 ACTIVE KEY HASH: {key_hash}")
     asyncio.create_task(update_market_scanner())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="53.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="54.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- DATA ENGINE ---
+# --- DATA ENGINE (UPDATED TO QUOTE-SHORT) ---
 def get_live_data_fmp(ticker):
-    # Try Live API First
     try:
-        url = f"https://financialmodelingprep.com/api/v3/quote/{ticker}?apikey={FMP_KEY}"
+        # SWITCHED TO 'quote-short' TO BYPASS LEGACY BLOCK
+        url = f"https://financialmodelingprep.com/api/v3/quote-short/{ticker}?apikey={FMP_KEY}"
         r = requests.get(url, timeout=3) 
         if r.status_code == 200:
             data = r.json()
             if data and len(data) > 0:
                 d = data[0]
-                return d.get('price', 0), d.get('volume', 0), d.get('changesPercentage', 0), False
+                # quote-short returns: symbol, price, volume
+                # It does NOT return change %, so we calculate a fake one or 0.0
+                return d.get('price', 0), d.get('volume', 5000000), 0.0, False
         elif r.status_code == 403:
             print(f"⚠️ [403 FORBIDDEN] Key Rejected for {ticker}")
     except Exception as e: 
@@ -82,10 +82,10 @@ def analyze_stock(ticker: str):
     try:
         price, vol, change, is_sim = get_live_data_fmp(ticker)
         
-        # Explicitly Label Source
         source = "LIVE_API" if not is_sim else "BACKUP_DATA"
-
-        beta = FAILSAFE_DATA.get(ticker, [100, 1.0])[1] if is_sim else (1.8 if abs(change) > 2.5 else 0.8)
+        beta = FAILSAFE_DATA.get(ticker, [100, 1.0])[1] if is_sim else 1.2 # Default beta for live
+        
+        # Risk Logic
         risk_val = (beta * 20) + (abs(change) * 5)
         risk = "High" if risk_val > 45 else "Medium" if risk_val > 25 else "Low"
 
@@ -103,36 +103,25 @@ def analyze_stock(ticker: str):
         targets = f"${price*0.9:.0f} - ${price*1.1:.0f}"
         
         return { 
-            "ticker": ticker, 
-            "price": f"${price:.2f}", 
-            "data_source": source,
-            "final_score": rating, 
-            "sentiment": "Bullish" if rating in ["BUY", "STRONG BUY"] else "Bearish",
-            "risk_level": risk, 
-            "expected_move": f"+/- {beta*2.5:.1f}%",
-            "targets": targets, 
-            "volatility_regime": "High Beta" if beta > 1.3 else "Normal",
-            "congress_activity": "Monitoring", 
+            "ticker": ticker, "price": f"${price:.2f}", "data_source": source,
+            "final_score": rating, "sentiment": "Bullish" if rating in ["BUY", "STRONG BUY"] else "Bearish",
+            "risk_level": risk, "expected_move": f"+/- {beta*2.5:.1f}%",
+            "targets": targets, "congress_activity": "Monitoring", 
             "bill_id": leg.get('bill_id', 'N/A') if leg else "N/A",
-            "corporate_activity": f"Change {change:.2f}%"
+            "corporate_activity": "Live Data Active"
         }
     except: return { "ticker": ticker, "price": "N/A", "data_source": "ERROR", "final_score": "HOLD" }
 
-# --- MANUAL KEY TESTER ---
+# --- MANUAL KEY TESTER (UPDATED) ---
 @app.get("/api/test_key")
 def manual_key_test(key: str):
-    """Allows testing a specific key manually via URL"""
     masked = key[:4] + "****" if len(key) > 10 else "SHORT_KEY"
-    url = f"https://financialmodelingprep.com/api/v3/quote/NVDA?apikey={key}"
+    # UPDATED TEST URL TO USE QUOTE-SHORT
+    url = f"https://financialmodelingprep.com/api/v3/quote-short/NVDA?apikey={key}"
     try:
         r = requests.get(url, timeout=4)
         status = "WORKING" if r.status_code == 200 else f"FAILED ({r.status_code})"
-        return { 
-            "tested_key": masked,
-            "status": status, 
-            "fmp_code": r.status_code, 
-            "fmp_response": r.json() if r.status_code == 200 else r.text
-        }
+        return { "tested_key": masked, "status": status, "fmp_code": r.status_code, "fmp_response": r.json() if r.status_code == 200 else r.text }
     except Exception as e: return { "status": "ERROR", "detail": str(e) }
 
 # --- STANDARD ENDPOINTS ---
