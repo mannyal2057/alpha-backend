@@ -46,27 +46,26 @@ class PriceRequest(BaseModel): tickers: list[str]
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     key_hash = FMP_KEY[:5] + "..." + FMP_KEY[-3:] if len(FMP_KEY) > 10 else FMP_KEY
-    print(f"💎 SYSTEM BOOT: AlphaInsider v54.0 (Legacy Fix).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider v55.0 (Profile Endpoint Hack).")
     print(f"🔑 ACTIVE KEY HASH: {key_hash}")
     asyncio.create_task(update_market_scanner())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="54.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="55.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- DATA ENGINE (UPDATED TO QUOTE-SHORT) ---
+# --- DATA ENGINE (PROFILE HACK) ---
 def get_live_data_fmp(ticker):
     try:
-        # SWITCHED TO 'quote-short' TO BYPASS LEGACY BLOCK
-        url = f"https://financialmodelingprep.com/api/v3/quote-short/{ticker}?apikey={FMP_KEY}"
+        # SWITCHED TO 'PROFILE' ENDPOINT (Often unrestricted)
+        url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_KEY}"
         r = requests.get(url, timeout=3) 
         if r.status_code == 200:
             data = r.json()
             if data and len(data) > 0:
                 d = data[0]
-                # quote-short returns: symbol, price, volume
-                # It does NOT return change %, so we calculate a fake one or 0.0
-                return d.get('price', 0), d.get('volume', 5000000), 0.0, False
+                # Profile has 'price', 'beta', 'volAvg'
+                return d.get('price', 0), d.get('volAvg', 5000000), d.get('changes', 0.0), False
         elif r.status_code == 403:
             print(f"⚠️ [403 FORBIDDEN] Key Rejected for {ticker}")
     except Exception as e: 
@@ -83,9 +82,8 @@ def analyze_stock(ticker: str):
         price, vol, change, is_sim = get_live_data_fmp(ticker)
         
         source = "LIVE_API" if not is_sim else "BACKUP_DATA"
-        beta = FAILSAFE_DATA.get(ticker, [100, 1.0])[1] if is_sim else 1.2 # Default beta for live
+        beta = FAILSAFE_DATA.get(ticker, [100, 1.0])[1] if is_sim else 1.2 
         
-        # Risk Logic
         risk_val = (beta * 20) + (abs(change) * 5)
         risk = "High" if risk_val > 45 else "Medium" if risk_val > 25 else "Low"
 
@@ -103,21 +101,25 @@ def analyze_stock(ticker: str):
         targets = f"${price*0.9:.0f} - ${price*1.1:.0f}"
         
         return { 
-            "ticker": ticker, "price": f"${price:.2f}", "data_source": source,
-            "final_score": rating, "sentiment": "Bullish" if rating in ["BUY", "STRONG BUY"] else "Bearish",
-            "risk_level": risk, "expected_move": f"+/- {beta*2.5:.1f}%",
-            "targets": targets, "congress_activity": "Monitoring", 
+            "ticker": ticker, 
+            "price": f"${price:.2f}", 
+            "data_source": source,
+            "final_score": rating, 
+            "sentiment": "Bullish" if rating in ["BUY", "STRONG BUY"] else "Bearish",
+            "risk_level": risk, 
+            "expected_move": f"+/- {beta*2.5:.1f}%",
+            "targets": targets, 
+            "congress_activity": "Monitoring", 
             "bill_id": leg.get('bill_id', 'N/A') if leg else "N/A",
-            "corporate_activity": "Live Data Active"
+            "corporate_activity": f"Change {change:.2f}%"
         }
     except: return { "ticker": ticker, "price": "N/A", "data_source": "ERROR", "final_score": "HOLD" }
 
-# --- MANUAL KEY TESTER (UPDATED) ---
+# --- MANUAL KEY TESTER ---
 @app.get("/api/test_key")
 def manual_key_test(key: str):
     masked = key[:4] + "****" if len(key) > 10 else "SHORT_KEY"
-    # UPDATED TEST URL TO USE QUOTE-SHORT
-    url = f"https://financialmodelingprep.com/api/v3/quote-short/NVDA?apikey={key}"
+    url = f"https://financialmodelingprep.com/api/v3/profile/NVDA?apikey={key}"
     try:
         r = requests.get(url, timeout=4)
         status = "WORKING" if r.status_code == 200 else f"FAILED ({r.status_code})"
