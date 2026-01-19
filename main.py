@@ -24,13 +24,14 @@ POLYGON_KEY = os.getenv("POLYGON_API_KEY", "").strip()
 SERVER_CACHE = {"buys": [], "cheap": [], "sells": [], "last_updated": None}
 EVENT_CACHE = {"ipos": [], "earnings": [], "economic": []}
 
-# --- 1. CORE DATA (The Edge) ---
+# --- 1. CORE DATA (The Data You Requested) ---
 TODAY = datetime.now().strftime("%Y-%m-%d")
 STATIC_LEGISLATION = [
     { "bill_id": "H.R. 5077", "bill_name": "CREATE AI Act", "market_impact": "Bullish", "sector": "AI", "conviction": 85 },
     { "bill_id": "H.R. 8070", "bill_name": "Defense Auth Act", "market_impact": "Bullish", "sector": "DEFENSE", "conviction": 90 },
     { "bill_id": "H.R. 4763", "bill_name": "Crypto Clarity Act", "market_impact": "Bullish", "sector": "CRYPTO", "conviction": 80 }
 ]
+
 INSIDER_TRADES = {
     "NVDA": {"who": "Rep. Pelosi", "action": "BUY", "size": "Huge"},
     "PLTR": {"who": "Rep. Green", "action": "BUY", "size": "Medium"},
@@ -304,7 +305,7 @@ def get_scanner(mode: str = "buys"): return SERVER_CACHE.get(mode, [])
 @app.get("/api/events")
 def get_events(): return EVENT_CACHE
 
-@app.get("/api/legislation") # <--- THE NEW FIX FOR THE EMPTY PAGE
+@app.get("/api/legislation") # <--- THE WATCHLIST DATA SOURCE
 def get_legislation():
     return STATIC_LEGISLATION
 
