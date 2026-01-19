@@ -11,6 +11,7 @@ import requests
 
 # --- CONFIGURATION ---
 env_key = os.getenv("FMP_API_KEY", "")
+# Clean the key of any accidental spaces
 FMP_KEY = env_key.strip() if len(env_key) > 5 else "DEMO"
 
 # --- CACHE ---
@@ -45,33 +46,36 @@ class PriceRequest(BaseModel): tickers: list[str]
 # --- APP STARTUP ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    key_hash = FMP_KEY[:5] + "..." + FMP_KEY[-3:] if len(FMP_KEY) > 10 else FMP_KEY
-    print(f"💎 SYSTEM BOOT: AlphaInsider v55.0 (Profile Endpoint Hack).")
-    print(f"🔑 ACTIVE KEY HASH: {key_hash}")
+    # Log key status for debugging
+    key_hash = FMP_KEY[:5] + "..." + FMP_KEY[-3:] if len(FMP_KEY) > 10 else "INVALID"
+    print(f"💎 SYSTEM BOOT: AlphaInsider v56.0 (Profile Endpoint Fix).")
+    print(f"🔑 ACTIVE KEY: {key_hash}")
     asyncio.create_task(update_market_scanner())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="55.0", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="56.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- DATA ENGINE (PROFILE HACK) ---
+# --- DATA ENGINE (PROFILE ENDPOINT) ---
 def get_live_data_fmp(ticker):
     try:
-        # SWITCHED TO 'PROFILE' ENDPOINT (Often unrestricted)
+        # THE FIX: Use '/profile/' instead of '/quote/'
+        # Profile data is included in the new Free Plan
         url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_KEY}"
         r = requests.get(url, timeout=3) 
+        
         if r.status_code == 200:
             data = r.json()
             if data and len(data) > 0:
                 d = data[0]
-                # Profile has 'price', 'beta', 'volAvg'
+                # Profile returns: price, beta, volAvg, changes
                 return d.get('price', 0), d.get('volAvg', 5000000), d.get('changes', 0.0), False
         elif r.status_code == 403:
-            print(f"⚠️ [403 FORBIDDEN] Key Rejected for {ticker}")
+            print(f"⚠️ [API BLOCK] 403 Forbidden for {ticker} (Check Plan)")
     except Exception as e: 
         print(f"⚠️ [API ERROR] {ticker}: {str(e)}")
     
-    # Fallback to Backup Data
+    # Fallback to Backup Data if API fails
     base = FAILSAFE_DATA.get(ticker, [100.0, 1.0])
     p = base[0] * random.uniform(0.99, 1.01)
     sim_change = base[1] * random.uniform(-1.5, 1.5)
@@ -81,7 +85,9 @@ def analyze_stock(ticker: str):
     try:
         price, vol, change, is_sim = get_live_data_fmp(ticker)
         
-        source = "LIVE_API" if not is_sim else "BACKUP_DATA"
+        # TRUTH DETECTOR: Label the source
+        source = "LIVE_API (Profile)" if not is_sim else "BACKUP_DATA"
+
         beta = FAILSAFE_DATA.get(ticker, [100, 1.0])[1] if is_sim else 1.2 
         
         risk_val = (beta * 20) + (abs(change) * 5)
@@ -110,7 +116,6 @@ def analyze_stock(ticker: str):
             "expected_move": f"+/- {beta*2.5:.1f}%",
             "targets": targets, 
             "congress_activity": "Monitoring", 
-            "bill_id": leg.get('bill_id', 'N/A') if leg else "N/A",
             "corporate_activity": f"Change {change:.2f}%"
         }
     except: return { "ticker": ticker, "price": "N/A", "data_source": "ERROR", "final_score": "HOLD" }
@@ -119,11 +124,17 @@ def analyze_stock(ticker: str):
 @app.get("/api/test_key")
 def manual_key_test(key: str):
     masked = key[:4] + "****" if len(key) > 10 else "SHORT_KEY"
+    # TEST THE PROFILE ENDPOINT
     url = f"https://financialmodelingprep.com/api/v3/profile/NVDA?apikey={key}"
     try:
         r = requests.get(url, timeout=4)
         status = "WORKING" if r.status_code == 200 else f"FAILED ({r.status_code})"
-        return { "tested_key": masked, "status": status, "fmp_code": r.status_code, "fmp_response": r.json() if r.status_code == 200 else r.text }
+        return { 
+            "tested_key": masked,
+            "endpoint": "profile",
+            "status": status, 
+            "response": r.json() if r.status_code == 200 else r.text 
+        }
     except Exception as e: return { "status": "ERROR", "detail": str(e) }
 
 # --- STANDARD ENDPOINTS ---
