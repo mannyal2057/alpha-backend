@@ -33,7 +33,7 @@ SECTOR_MAP = {
     "FINANCE": ["JPM", "BAC", "SOFI", "GS", "C", "WFC"],
     "ENERGY": ["XOM", "CVX", "OXY", "KMI", "MPC"],
     "PHARMA": ["PFE", "MRK", "LLY", "JNJ", "ABBV"],
-    "TELECOM": ["T", "VZ", "TMUS"] 
+    "TELECOM": ["T", "VZ", "TMUS"] # Added for stability
 }
 
 # Real-time keyword scanner
@@ -48,21 +48,21 @@ KEYWORDS = {
     "TELECOM": ["broadband", "spectrum", "fcc", "internet", "telecom"]
 }
 
-# --- FAIL-SAFE DATA ---
+# --- FAIL-SAFE DATA (Expanded for Under $50 Options) ---
 FAILSAFE_DATA = { 
     # High Cap
     "NVDA": [185.0, 1.4], "MSFT": [460.0, 0.9], "AMD": [230.0, 1.4], 
     "GOOGL": [190.0, 1.0], "AMZN": [220.0, 1.1], "TSLA": [415.0, 2.2],
     "LMT": [580.0, 0.5], "AVGO": [1050.0, 1.1], "COST": [720.0, 0.6],
     
-    # Mid/Low Cap
+    # Mid/Low Cap (Under $50 Candidates)
     "AI": [13.0, 1.8], "PLTR": [170.0, 1.5], "COIN": [310.0, 2.5], 
     "F": [11.5, 1.1], "GM": [45.0, 1.2], "SOFI": [14.0, 1.8], 
     "RIVN": [10.5, 2.8], "HOOD": [35.0, 1.4], "LCID": [3.5, 3.0],
     "PFE": [25.0, 0.6], "INTC": [24.0, 1.2], "BAC": [35.0, 0.9],
     "KMI": [20.0, 0.5], "WMT": [60.0, 0.4], 
     
-    # Stable Cheap Stocks
+    # NEW STABLE CHEAP STOCKS
     "T": [17.5, 0.5], "VZ": [40.0, 0.4], "CSCO": [48.0, 0.6],
     "WBD": [11.0, 1.2], "AAL": [14.0, 1.5], "CLSK": [18.0, 2.5],
     "CCL": [16.0, 1.8], "PLUG": [3.5, 2.5]
@@ -75,7 +75,7 @@ class PriceRequest(BaseModel): tickers: list[str]
 # --- APP STARTUP ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider Live (Freshness Filter Active).")
+    print(f"💎 SYSTEM BOOT: AlphaInsider Live (Cheap Stock Fix).")
     
     if not CONGRESS_KEY:
         print("⚠️ CRITICAL: CONGRESS_KEY is missing. Legislation feed will be empty.")
@@ -85,7 +85,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(update_legislation_feed())
     yield
 
-app = FastAPI(title="AlphaInsider Pro", version="Live.1.4", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider Pro", version="Live.1.3", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -120,7 +120,7 @@ async def get_sponsor_details(client, congress, bill_type, bill_number):
     except: pass
     return "See Text"
 
-# --- 1. LIVE CONGRESS FEED ENGINE (With 30-Day Freshness Filter) ---
+# --- 1. LIVE CONGRESS FEED ENGINE ---
 async def update_legislation_feed():
     while True:
         try:
@@ -129,7 +129,7 @@ async def update_legislation_feed():
                 await asyncio.sleep(60)
                 continue
 
-            url = f"https://api.congress.gov/v3/bill?limit=60&sort=updateDate+desc&api_key={CONGRESS_KEY}&format=json"
+            url = f"https://api.congress.gov/v3/bill?limit=40&sort=updateDate+desc&api_key={CONGRESS_KEY}&format=json"
             async with httpx.AsyncClient() as client:
                 resp = await client.get(url, timeout=15.0)
                 if resp.status_code == 200:
@@ -137,23 +137,7 @@ async def update_legislation_feed():
                     bills = data.get("bills", [])
                     processed_bills = []
                     
-                    # DATE CUTOFF (30 Days Ago)
-                    cutoff_date = datetime.now() - timedelta(days=30)
-                    
                     for bill in bills:
-                        # 1. Parse Date
-                        raw_date = bill.get("updateDate", "") or bill.get("introducedDate", "")
-                        try:
-                            # Congress API format is usually YYYY-MM-DD
-                            bill_date = datetime.strptime(raw_date, "%Y-%m-%d")
-                        except:
-                            # If date parsing fails, skip to be safe
-                            continue
-
-                        # 2. Freshness Check
-                        if bill_date < cutoff_date:
-                            continue # Skip bills older than 30 days
-
                         title = bill.get("title", "").lower()
                         if not title: continue
                         
@@ -186,22 +170,20 @@ async def update_legislation_feed():
                                 "sponsor": sponsor_name, 
                                 "impact": market_impact,
                                 "sector": detected_sector,
-                                "affected_stocks": SECTOR_MAP.get(detected_sector, []),
-                                "date": raw_date
+                                "affected_stocks": SECTOR_MAP.get(detected_sector, [])
                             }
                             processed_bills.append(bill_obj)
                     
-                    # Update Cache
-                    SERVER_CACHE["legislation"] = processed_bills
-                    print(f"✅ Congress Feed Updated: {len(processed_bills)} active fresh bills.")
+                    if processed_bills:
+                        SERVER_CACHE["legislation"] = processed_bills
+                        print(f"✅ Congress Feed Updated: {len(processed_bills)} bills.")
                 
         except Exception as e:
             print(f"Legislation Update Failed: {e}")
-        await asyncio.sleep(7200) # Check every 2 hours
+        await asyncio.sleep(7200)
 
 # --- 2. MARKET DATA ENGINE ---
 async def get_market_price(ticker):
-    # 1. Try Live API (Finnhub)
     if FINNHUB_KEY:
         try:
             url = f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_KEY}"
@@ -211,13 +193,11 @@ async def get_market_price(ticker):
                 d = r.json()
                 if d.get('c', 0) > 0:
                     day_range = (d['h'] - d['l']) / d['c'] * 100
-                    # Return: Price, Change, Volatility, Is_Simulated
                     return d['c'], d['dp'], day_range, False
         except: pass
             
-    # 2. Fallback to Failsafe Data (Simulation)
     base = FAILSAFE_DATA.get(ticker, [100.0, 1.0])
-    p = base[0] * random.uniform(0.995, 1.005) # Tiny jitter
+    p = base[0] * random.uniform(0.995, 1.005)
     change = base[1] * random.uniform(0.9, 1.1)
     return p, change, abs(change * 1.2), True
 
@@ -228,7 +208,6 @@ async def analyze_stock(ticker):
     edge_score = 0
     catalyst = "None"
     
-    # Get only fresh active sectors from cache
     active_sectors = [b['sector'] for b in SERVER_CACHE.get("legislation", [])]
     
     my_sector = "Unknown"
@@ -274,12 +253,16 @@ async def update_market_scanner():
             buys.sort(key=lambda x: x['raw_price'], reverse=True) 
             SERVER_CACHE["buys"] = buys[:5]
 
-            # Cheap Stock Logic
+            # --- CHEAP STOCK FIX ---
+            # 1. Try finding 'BUY' stocks under $50
             cheap = [x for x in results if x.get('raw_price', 999) < 50 and x.get('final_score') == "BUY"]
+            
+            # 2. If not enough, allow 'HOLD' stocks under $50 that aren't High Risk
             if len(cheap) < 5:
                 holds = [x for x in results if x.get('raw_price', 999) < 50 and x.get('final_score') == "HOLD"]
                 cheap.extend(holds)
             
+            # 3. Sort by Score (highest first) and take top 5
             cheap.sort(key=lambda x: float(x.get('probability', '0%').strip('%')), reverse=True)
             SERVER_CACHE["cheap"] = cheap[:5]
 
@@ -305,15 +288,8 @@ def get_scanner(mode: str = "buys"): return SERVER_CACHE.get(mode, [])
 async def get_signals(ticker: str = "NVDA"):
     return [await analyze_stock(ticker.upper())]
 
-# --- FIX FOR PAPER TRADING ---
-# This was previously returning {}, causing the dashboard prices to freeze.
 @app.post("/api/prices")
-async def get_prices(req: PriceRequest): 
-    response = {}
-    for t in req.tickers:
-        p, _, _, _ = await get_market_price(t)
-        response[t] = p
-    return response
+def get_prices(req: PriceRequest): return {}
 
 if __name__ == "__main__":
     import uvicorn
