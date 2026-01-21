@@ -10,26 +10,16 @@ import httpx
 
 # --- CONFIGURATION ---
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "").strip()
-POLYGON_KEY = os.getenv("POLYGON_API_KEY", "").strip()
 CONGRESS_KEY = os.getenv("CONGRESS_KEY", "").strip()
 
-# --- CACHE & STATE ---
+# --- CACHE ---
 SERVER_CACHE = {
-    "buys": [], 
-    "cheap": [], 
-    "sells": [], 
-    "legislation": [], 
-    "last_update": None,
-    "status": "Initializing"
+    "buys": [], "cheap": [], "sells": [], 
+    "legislation": [], "status": "Initializing"
 }
 
-# --- 1. THE FIXED WATCHLIST (Always Scanned) ---
-FIXED_WATCHLIST = [
-    "GOOGL", "META", "NFLX", "TMUS", "DIS", 
-    "VZ", "CMCSA", "FOXA", "T", "WBD"       
-]
-
-# --- 2. THE MASTER DATABASE (Wakes up based on Bills) ---
+# --- 1. SECTOR DEFINITIONS ---
+# Used for Dynamic "Bill Hunting"
 SECTOR_DATABASE = { 
     "AI_TECH":     ["NVDA", "AMD", "MSFT", "PLTR", "AI", "SMCI", "AVGO", "CRWD"], 
     "CRYPTO":      ["COIN", "HOOD", "MARA", "MSTR", "CLSK", "BITO"], 
@@ -44,7 +34,9 @@ SECTOR_DATABASE = {
     "SEMIS":       ["TSM", "QCOM", "TXN", "MU", "INTC"]
 }
 
-# --- 3. KEYWORDS (Broadened) ---
+FIXED_WATCHLIST = ["GOOGL", "META", "NFLX", "TMUS", "DIS", "VZ", "CMCSA", "FOXA", "T", "WBD"]
+
+# --- 2. KEYWORDS ---
 KEYWORDS = {
     "AI_TECH":     ["artificial intelligence", "computational", "cyber", "privacy", "semiconductor", "section 230", "algorithm"],
     "CRYPTO":      ["digital asset", "blockchain", "bitcoin", "stablecoin", "crypto", "ledger"],
@@ -59,13 +51,31 @@ KEYWORDS = {
     "SEMIS":       ["chips", "wafer", "foundry", "science act"]
 }
 
-# --- 4. FAIL-SAFE PRICES ---
+# --- 3. FAIL-SAFE PRICES (UPDATED) ---
+# Added QS, LCID, SOFI with accurate prices so they don't default to $50
 FAILSAFE_DATA = { 
+    # Tech / AI
     "NVDA": [185.0, 1.4], "MSFT": [460.0, 0.9], "AMD": [230.0, 1.4], "GOOGL": [178.0, 1.2],
     "META": [595.0, 1.5], "NFLX": [885.0, 2.1], "TMUS": [188.0, 0.8], "DIS": [96.0, 1.1],
-    "VZ": [41.5, 0.5], "CMCSA": [42.0, 0.9], "FOXA": [43.0, 1.1], "T": [22.5, 0.4], "WBD": [8.5, 2.5],
-    "COIN": [310.0, 2.5], "TSLA": [415.0, 2.2], "LMT": [580.0, 0.5], "PLTR": [170.0, 1.5],
-    "LLY": [800.0, 1.1], "CCJ": [55.0, 2.0], "TLRY": [1.80, 4.0], "XOM": [115.0, 0.8]
+    "PLTR": [170.0, 1.5], "AI": [13.0, 1.8], "AVGO": [1050.0, 1.1], "CRWD": [300.0, 1.5],
+    
+    # EV / Auto (FIXED)
+    "TSLA": [415.0, 2.2], "RIVN": [10.5, 2.8], "LCID": [3.50, 3.0], "QS": [10.64, 2.5],
+    "F": [11.5, 1.1], "GM": [45.0, 1.2], "ON": [70.0, 1.8],
+
+    # Comm Services / Value
+    "VZ": [41.5, 0.5], "CMCSA": [42.0, 0.9], "FOXA": [43.0, 1.1], "T": [22.5, 0.4], 
+    "WBD": [8.5, 2.5], "CSCO": [48.0, 0.6], "AAL": [14.0, 1.5], "CCL": [16.0, 1.8],
+
+    # Crypto / Finance
+    "COIN": [310.0, 2.5], "HOOD": [35.0, 1.4], "MARA": [20.0, 4.0], "MSTR": [350.0, 3.0],
+    "SOFI": [14.0, 1.8], "PYPL": [60.0, 1.2], "BAC": [35.0, 0.9],
+
+    # Energy / Nuclear
+    "XOM": [115.0, 0.8], "CCJ": [55.0, 2.0], "URA": [30.0, 1.5], "OXY": [58.0, 1.0],
+
+    # Pharma / Cannabis
+    "LLY": [800.0, 1.1], "PFE": [25.0, 0.6], "TLRY": [1.80, 4.0], "CGC": [3.50, 5.0]
 }
 
 class PriceRequest(BaseModel): tickers: list[str]
@@ -73,19 +83,16 @@ class PriceRequest(BaseModel): tickers: list[str]
 # --- APP STARTUP ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"💎 SYSTEM BOOT: AlphaInsider Wide-Net Hunter.")
+    print(f"💎 SYSTEM BOOT: AlphaInsider Accurate Pricing v2.2")
     asyncio.create_task(update_market_scanner())
     asyncio.create_task(update_legislation_feed())
     yield
 
-app = FastAPI(title="AlphaInsider Wide", version="Live.2.1", lifespan=lifespan)
+app = FastAPI(title="AlphaInsider", version="Live.2.2", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
 async def get_sponsor_details(client, congress, bill_type, bill_number):
@@ -95,8 +102,7 @@ async def get_sponsor_details(client, congress, bill_type, bill_number):
         if resp.status_code == 200:
             data = resp.json()
             sponsors = data.get('bill', {}).get('sponsors', [])
-            if sponsors:
-                return sponsors[0].get('name', 'See Text').split(',')[0]
+            if sponsors: return sponsors[0].get('name', 'See Text').split(',')[0]
     except: pass
     return "See Text"
 
@@ -105,11 +111,9 @@ async def update_legislation_feed():
     while True:
         try:
             if not CONGRESS_KEY:
-                SERVER_CACHE["status"] = "Missing API Key"
                 await asyncio.sleep(60)
                 continue
 
-            # INCREASED LIMIT TO 250 (Max per page)
             url = f"https://api.congress.gov/v3/bill?limit=250&sort=updateDate+desc&api_key={CONGRESS_KEY}&format=json"
             async with httpx.AsyncClient() as client:
                 resp = await client.get(url, timeout=20.0)
@@ -117,18 +121,13 @@ async def update_legislation_feed():
                     data = resp.json()
                     bills = data.get("bills", [])
                     processed_bills = []
-                    
-                    # EXTENDED DATE CUTOFF (90 Days) to catch slow movers
-                    cutoff_date = datetime.now() - timedelta(days=90)
+                    cutoff = datetime.now() - timedelta(days=90)
                     
                     for bill in bills:
-                        raw_date = bill.get("updateDate", "") or bill.get("introducedDate", "")
                         try:
-                            bill_date = datetime.strptime(raw_date, "%Y-%m-%d")
+                            b_date = datetime.strptime(bill.get("updateDate", "") or bill.get("introducedDate", ""), "%Y-%m-%d")
                         except: continue
-
-                        if bill_date < cutoff_date:
-                            continue 
+                        if b_date < cutoff: continue
 
                         title = bill.get("title", "").lower()
                         if not title: continue
@@ -140,45 +139,34 @@ async def update_legislation_feed():
                         for sector, tags in KEYWORDS.items():
                             if any(tag in title for tag in tags):
                                 detected_sector = sector
-                                if any(x in title for x in ["authorize", "fund", "support", "grant", "credit"]):
+                                if any(x in title for x in ["authorize", "fund", "support", "grant"]):
                                     market_bias = "Bullish (Funding)"
                                     weight = 20
-                                elif any(x in title for x in ["ban", "restrict", "prohibit", "sanction", "tax", "regulate"]):
+                                elif any(x in title for x in ["ban", "restrict", "prohibit", "sanction"]):
                                     market_bias = "Bearish (Regulation)"
                                     weight = -20
-                                else:
-                                    market_bias = "Watchlist"
+                                else: market_bias = "Watchlist"
                                 break
                         
                         if detected_sector != "GENERAL":
-                            sponsor_name = "See Text" # Default
-                            # Try simple parse first
-                            if bill.get('sponsors'):
-                                raw = bill['sponsors'][0].get('name', '')
-                                if raw: sponsor_name = raw.split(',')[0]
-                            
                             affected = SECTOR_DATABASE.get(detected_sector, [])
-
-                            bill_obj = {
-                                "id": f"{bill.get('type', 'BILL')} {bill.get('number')}",
+                            processed_bills.append({
+                                "id": f"{bill.get('type','BILL')} {bill.get('number')}",
                                 "name": bill.get("title", "Untitled").title(),
                                 "impact": market_bias,
                                 "sector": detected_sector,
                                 "weight": weight,
                                 "affected_stocks": affected,
-                                "date": raw_date
-                            }
-                            processed_bills.append(bill_obj)
+                                "date": bill.get("updateDate")
+                            })
                     
                     SERVER_CACHE["legislation"] = processed_bills
-                    print(f"✅ Hunter Active: {len(processed_bills)} bills found (Limit 250).")
-                
-        except Exception as e:
-            print(f"Legislation Update Failed: {e}")
+        except: pass
         await asyncio.sleep(7200)
 
 # --- 2. MARKET DATA ENGINE ---
 async def get_market_price(ticker):
+    # Try Live API first
     if FINNHUB_KEY:
         try:
             url = f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_KEY}"
@@ -187,40 +175,27 @@ async def get_market_price(ticker):
             if r.status_code == 200:
                 d = r.json()
                 if d.get('c', 0) > 0:
-                    day_range = (d['h'] - d['l']) / d['c'] * 100
-                    return d['c'], d['dp'], day_range, False
+                    return d['c'], d['dp'], (d['h']-d['l'])/d['c']*100, False
         except: pass
-            
-    base = FAILSAFE_DATA.get(ticker, [100.0, 1.0])
-    if ticker not in FAILSAFE_DATA:
-        base = [50.0, 1.5]
+    
+    # Fallback to Accurate Failsafe
+    base = FAILSAFE_DATA.get(ticker, [50.0, 1.5]) # Default 50 if truly unknown
     p = base[0] * random.uniform(0.995, 1.005)
-    change = base[1] * random.uniform(0.9, 1.1)
-    return p, change, abs(change * 1.2), True
+    return p, base[1], base[1]*1.2, True
 
 # --- 3. SIGNAL STACK ---
 async def analyze_stock(ticker):
     price, change, vol, is_sim = await get_market_price(ticker)
-    
     edge_score = 0
     catalyst = "None"
     
-    active_bills = SERVER_CACHE.get("legislation", [])
-    
-    for bill in active_bills:
+    for bill in SERVER_CACHE.get("legislation", []):
         if ticker in bill["affected_stocks"]:
             edge_score += bill["weight"] * 2
-            catalyst = f"Bill: {bill['id']} ({bill['sector']})"
+            catalyst = f"Bill: {bill['id']}"
             
     total_score = edge_score + (change * 10)
     bias = "Bullish" if total_score > 0 else "Bearish"
-    expected_move = vol * 1.2 
-    
-    risk_level = "High" if vol > 2.5 else "Medium"
-    
-    # Cheap Stock Bonus
-    if price < 50 and vol < 2.0 and bias == "Bullish":
-        total_score += 15
     
     return {
         "ticker": ticker,
@@ -229,41 +204,33 @@ async def analyze_stock(ticker):
         "final_score": "BUY" if total_score > 25 else "SELL" if total_score < -25 else "HOLD",
         "trade_bias": bias,
         "probability": f"{50 + min(abs(total_score), 45):.0f}%",
-        "expected_move": f"+/- {expected_move:.2f}%",
-        "risk_level": risk_level,
-        "key_catalyst": catalyst,
-        "targets": f"${price*(1-expected_move/100):.2f} - ${price*(1+expected_move/100):.2f}"
+        "expected_move": f"+/- {vol*1.2:.2f}%",
+        "risk_level": "High" if vol > 2.5 else "Medium",
+        "key_catalyst": catalyst
     }
 
 async def update_market_scanner():
     while True:
         try:
-            stocks_to_scan = set(FIXED_WATCHLIST)
-            active_bills = SERVER_CACHE.get("legislation", [])
-            for bill in active_bills:
-                for ticker in bill.get("affected_stocks", []):
-                    stocks_to_scan.add(ticker)
+            stocks = set(FIXED_WATCHLIST)
+            for b in SERVER_CACHE.get("legislation", []):
+                stocks.update(b.get("affected_stocks", []))
             
-            tasks = [analyze_stock(t) for t in list(stocks_to_scan)]
-            if not tasks:
-                await asyncio.sleep(5)
-                continue
+            tasks = [analyze_stock(t) for t in list(stocks)]
+            if tasks:
+                results = await asyncio.gather(*tasks)
                 
-            results = await asyncio.gather(*tasks)
-            
-            buys = [x for x in results if x['trade_bias'] == "Bullish"]
-            buys.sort(key=lambda x: x['raw_price'], reverse=True) 
-            SERVER_CACHE["buys"] = buys[:6]
+                buys = [x for x in results if x['trade_bias'] == "Bullish"]
+                buys.sort(key=lambda x: x['raw_price'], reverse=True) 
+                SERVER_CACHE["buys"] = buys[:6]
 
-            cheap = [x for x in results if x.get('raw_price', 999) < 55]
-            cheap.sort(key=lambda x: (x['final_score'] == 'BUY', x['final_score'] == 'HOLD'), reverse=True)
-            SERVER_CACHE["cheap"] = cheap[:6]
+                cheap = [x for x in results if x.get('raw_price') < 55]
+                cheap.sort(key=lambda x: (x['final_score'] == 'BUY'), reverse=True)
+                SERVER_CACHE["cheap"] = cheap[:6]
 
-            sells = [x for x in results if x['trade_bias'] == "Bearish"]
-            SERVER_CACHE["sells"] = sells[:6]
-            
-        except Exception as e:
-            print(f"Scanner Error: {e}")
+                sells = [x for x in results if x['trade_bias'] == "Bearish"]
+                SERVER_CACHE["sells"] = sells[:6]
+        except: pass
         await asyncio.sleep(60)
 
 # --- ENDPOINTS ---
